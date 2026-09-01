@@ -1,0 +1,27 @@
+[project]
+name = "port-sample"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.141.1",
+    "markitdown-ocr>=0.1.0",
+    "pydantic-settings>=2.14.2",
+    "python-multipart>=0.0.32",
+    "ruff>=0.16.1",
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "TID"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"fastapi.concurrency.run_in_threadpool".msg = "Use core.concurrency.run_limited with a dedicated CapacityLimiter."
+"anyio.to_thread.run_sync".msg = "Use core.concurrency.run_limited with a dedicated CapacityLimiter."
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
