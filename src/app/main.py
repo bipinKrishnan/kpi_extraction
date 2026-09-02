@@ -2,8 +2,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.core.config import get_settings
 from app.core.logger import get_logger
 from app.routers import text_extract
+from app.utils.ocr_client import OcrClient
 from app.utils.office import CONVERTIBLE_EXTENSIONS, find_soffice
 
 logger = get_logger(__name__)
@@ -26,7 +28,16 @@ def _check_libreoffice() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _check_libreoffice()
-    yield
+
+    # One client for the whole process, so its connection pool and page
+    # semaphore are shared by every request instead of per-request.
+    client = OcrClient(get_settings())
+    app.state.ocr_client = client
+
+    try:
+        yield
+    finally:
+        await client.aclose()
 
 
 app = FastAPI(title="Port", version="0.0.1", lifespan=lifespan)

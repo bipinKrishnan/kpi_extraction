@@ -9,7 +9,6 @@ Deploy:
 """
 
 import json
-import os
 import subprocess
 import time
 import urllib.error
@@ -18,39 +17,58 @@ import urllib.request
 import modal
 
 # ---------------------------------------------------------------------------
-# CONFIG — values set to REQUIRED must be filled in before deploying.
-# `_validate_config()` below fails fast at import if any are left unset.
+# CONFIG
 # ---------------------------------------------------------------------------
-
-REQUIRED = None
 
 # --- model ---
 MODEL_NAME = "lightonai/LightOnOCR-2-1B"
 # Pin a commit SHA. Tracking `main` can change the weights under you and
 # silently invalidate both the Volume cache and the GPU snapshot.
-MODEL_REVISION = REQUIRED  # <-- e.g. "a1b2c3d4..." from the HF repo history
+MODEL_REVISION = "c97bd377f04481830395218fa8951df9deaba756"  # main @ 2026-07-08
 SERVED_MODEL_NAME = "ocr"  # stable alias clients call; decouples them from the repo id
 
 # --- versions ---
 # Pin explicitly: vLLM minor releases change flag names and snapshot behaviour.
-VLLM_VERSION = REQUIRED  # <-- e.g. "0.11.0"
+VLLM_VERSION = "0.28.0"  # LightOnOCRForConditionalGeneration registered since 0.26.0
 CUDA_TAG = "12.9.0-devel-ubuntu22.04"  # -devel: vLLM needs nvcc for some kernels
 PYTHON_VERSION = "3.12"
 
 # --- hardware ---
-# A 1B BF16 VLM is ~2.5 GB of weights; L4 (24 GB) is usually plenty. Use L40S if
-# you need more throughput per container.
-GPU_TYPE = REQUIRED  # <-- e.g. "L4" or "L40S"
+# A 1B BF16 VLM is only ~2.5 GB of weights, so the card is chosen for compute
+# and KV capacity, not to fit the model. Note that Ampere is compute capability
+# 8.0, below the 8.9 vLLM requires for FP8, so neither FP8 weights nor an FP8
+# KV cache are available here -- the KV budget below is BF16 and final.
+GPU_TYPE = "A100-40GB"
 N_GPU = 1  # MUST stay 1: GPU snapshots are incompatible with multi-GPU
-GPU_MEMORY_UTILIZATION = 0.90
+# 0.95 is what Modal's own vLLM snapshot example uses, but that is an 80 GB
+# H100 where 5% is 4 GB of slack. On a 40 GB A100 it is 2 GB, which also has to
+# cover CUDA graphs and the snapshot machinery. Drop to 0.90 if snapshot
+# creation OOMs.
+GPU_MEMORY_UTILIZATION = 0.92
 
 # --- vLLM runtime ---
 VLLM_PORT = 8000
 # Must fit the image tokens for a 1540px page PLUS max_tokens (4096).
 # Too low silently truncates pages; too high shrinks the KV cache.
-MAX_MODEL_LEN = REQUIRED  # <-- e.g. 8192
+#
+# Worst case (square page): 1540px / patch_size 14 / spatial_merge_size 2 = 55
+# tokens per side, so 55*55 = 3025 image tokens plus ~55 row-break/end tokens.
+# ~3080 + 4096 output = ~7.2k. The model allows 16384 (max_position_embeddings)
+# but going there would halve concurrency for pages that never need it.
+MAX_MODEL_LEN = 8192
 # Per-container batch size. Also your main throughput/latency dial.
-MAX_NUM_SEQS = REQUIRED  # <-- e.g. 32
+#
+# KV is ~112 KiB/token (28 layers x 2 x 8 KV heads x 128 head_dim x 2 bytes).
+# A 40 GB A100 at 0.92 leaves ~32 GB for KV once weights and CUDA graphs are
+# accounted for, which is ~40 sequences at the 7.2k tokens a page really uses.
+# 32 stays clear of preemption, which is unusually expensive here: with
+# --mm-processor-cache-gb 0 a recomputed sequence re-runs the vision encoder.
+MAX_NUM_SEQS = 32
+# Prefill budget per scheduler step, deliberately NOT tied to MAX_MODEL_LEN.
+# vLLM sets encoder_cache_size from this value, so at 8192 only ~2 pages of
+# image embeddings can be in flight and prefill stalls waiting on a slot.
+# 16384 buys ~5 pages, at ~6 MB of embeddings each.
+MAX_NUM_BATCHED_TOKENS = 16384
 
 # --- Modal fleet ---
 MINUTES = 60
@@ -67,24 +85,21 @@ STARTUP_TIMEOUT = 10 * MINUTES  # the first boot builds the snapshot and is slow
 WAKE_TIMEOUT = 2 * MINUTES  # snapshot restores are fast; this is a safety net
 
 # --- auth ---
-# Create the secret with:
-#   modal secret create vllm-api-key VLLM_API_KEY=<your-key>
-API_KEY_SECRET_NAME = "vllm-api-key"
-API_KEY_ENV_VAR = "VLLM_API_KEY"
-
-# Authenticate at Modal's proxy, ABOVE vLLM. Do not turn this off.
+# Modal's proxy is the ONLY thing authenticating this deployment. Do not turn
+# it off, and do not expect vLLM to cover for it.
 #
 # A Modal web_server is public by default, and its URL is derived from the
 # workspace/app/class/method names rather than being random -- obscurity buys
-# nothing. vLLM's own --api-key only guards /v1/* routes, so with
-# VLLM_SERVER_DEV_MODE=1 (required for GPU snapshotting) the admin endpoints
-# stay reachable unauthenticated: an anonymous POST /sleep would stall every
-# request until the container is recovered.
+# nothing. vLLM's own --api-key would not have helped much anyway: it only
+# guards GUARDED_PREFIX = ("/v1", "/v2", "/inference", "/cohere"), and
+# VLLM_SERVER_DEV_MODE=1 (required for GPU snapshotting) registers /sleep and
+# /wake_up outside those prefixes. An anonymous POST /sleep would offload the
+# weights and stall every request until the container is recovered.
 #
 # With proxy auth, unauthenticated requests are rejected by Modal and never
-# reach the container, so every route is covered. Callers pass Modal-Key /
-# Modal-Secret header tokens created in the Modal dashboard. The vLLM
-# --api-key stays on as a second layer.
+# reach the container, so every route is covered -- including the dev-mode
+# ones. Callers pass Modal-Key / Modal-Secret header tokens created in the
+# Modal dashboard.
 REQUIRE_PROXY_AUTH = True
 
 # --- GPU memory snapshotting ---
@@ -92,28 +107,6 @@ REQUIRE_PROXY_AUTH = True
 # upgrade breaks snapshot creation.
 ENABLE_GPU_SNAPSHOT = True
 SLEEP_LEVEL = 1  # 1 = offload weights to host RAM and keep them; 2 discards them
-
-
-def _validate_config() -> None:
-    """Fail at import rather than halfway through a deploy."""
-    unset = [
-        name
-        for name in (
-            "MODEL_REVISION",
-            "VLLM_VERSION",
-            "GPU_TYPE",
-            "MAX_MODEL_LEN",
-            "MAX_NUM_SEQS",
-        )
-        if globals()[name] is REQUIRED
-    ]
-    if unset:
-        raise ValueError(
-            "Fill in these config values in ocr/modal_app.py: " + ", ".join(unset)
-        )
-
-
-_validate_config()
 
 # ---------------------------------------------------------------------------
 # Container image
@@ -172,7 +165,7 @@ def build_vllm_command() -> list[str]:
         "--max-num-seqs",
         str(MAX_NUM_SEQS),
         "--max-num-batched-tokens",
-        str(MAX_MODEL_LEN),
+        str(MAX_NUM_BATCHED_TOKENS),
         "--uvicorn-log-level=info",
     ]
     cmd += _ocr_flags()
@@ -180,8 +173,6 @@ def build_vllm_command() -> list[str]:
     # Keep compilation ON: with snapshots you pay for it once, at snapshot
     # creation, and every later start restores the already-compiled state.
     cmd += ["--no-enforce-eager"]
-    # Auth comes from the Modal Secret. Never hardcode a key.
-    cmd += ["--api-key", os.environ[API_KEY_ENV_VAR]]
     return cmd
 
 
@@ -213,20 +204,14 @@ def _local_url(path: str) -> str:
     return f"http://127.0.0.1:{VLLM_PORT}{path}"
 
 
-def _auth_header() -> dict[str, str]:
-    return {"Authorization": f"Bearer {os.environ[API_KEY_ENV_VAR]}"}
-
-
 def _post(path: str) -> None:
-    req = urllib.request.Request(
-        _local_url(path), data=b"", method="POST", headers=_auth_header()
-    )
+    req = urllib.request.Request(_local_url(path), data=b"", method="POST")
     with urllib.request.urlopen(req, timeout=WAKE_TIMEOUT) as resp:
         resp.read()
 
 
 def _is_healthy() -> bool:
-    req = urllib.request.Request(_local_url("/health"), headers=_auth_header())
+    req = urllib.request.Request(_local_url("/health"))
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status == 200
@@ -271,7 +256,6 @@ def _autoscaling_kwargs() -> dict:
         "/root/.cache/huggingface": hf_cache_vol,
         "/root/.cache/vllm": vllm_cache_vol,
     },
-    secrets=[modal.Secret.from_name(API_KEY_SECRET_NAME)],
     # ---- GPU memory caching ----
     enable_memory_snapshot=True,  # CPU snapshot; prerequisite for the GPU one
     experimental_options={"enable_gpu_snapshot": ENABLE_GPU_SNAPSHOT},
