@@ -79,7 +79,7 @@ modal secret create extract-service \
 
 Then add it to the FastAPI deployment in `fastapi_deploy.py`:
 
-```python
+```
 secrets=[
     modal.Secret.from_name("ocr-service"),
     modal.Secret.from_name("extract-service"),
@@ -149,8 +149,9 @@ schema, its field names' meaning, or any `Field(description=...)`. So:
 > purely for structural enforcement.
 
 For `sample_output.json` that means spelling out, in the prompt: `period` is
-`YYYY-MM`; the allowed `period_type` values (`MTH`, `QTR`, `YTD`, …); the
-allowed `measure` values (`actual`, `actual_cc`, `forecast`, `forecast_delta`);
+`YYYY-MM`; the preferred `period_type` values (`MTH`, `QTR`, `YTD`, …); the
+preferred `measure` values (`actual`, `actual_cc`, `forecast`,
+`forecast_delta`) and that both vocabularies are open rather than closed;
 the sign convention for `forecast_delta`; that `value` is a plain number with no
 thousands separators; which currency to report; and what to emit when a figure
 is absent.

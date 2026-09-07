@@ -1,5 +1,6 @@
 # TODO
 - return libreoffice failed docs
+- add warmup (to cache gpu data) step during container deployment
 
 ## DEPLOY
 

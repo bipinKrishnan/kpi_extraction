@@ -82,11 +82,11 @@ MAX_NUM_BATCHED_TOKENS = 16384
 
 # --- Modal fleet ---
 MINUTES = 60
-MIN_CONTAINERS = 0  # scale to zero when idle: no traffic, no GPU bill
+MIN_CONTAINERS = 1  # keep one container resident so it is always warm for requests
 MAX_CONTAINERS = 3  # hard ceiling; a runaway client cannot fan out past 3 GPUs
 # How long a container stays warm after its last request. This is the idle-cost
 # vs cold-start dial: raise it for bursty traffic, lower it to save money.
-SCALEDOWN_WINDOW = 3 * MINUTES
+SCALEDOWN_WINDOW = 5 * MINUTES
 # Spare warm containers kept above current load, so a second concurrent request
 # doesn't wait on a boot. Costs one idle GPU per unit whenever anything is
 # running. Left at 0 (disabled) -- raise it only if burst latency proves painful.

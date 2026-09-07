@@ -29,10 +29,13 @@ app = modal.App("port-extract", image=image)
 
 
 @app.function(
-    # OCR_BASE_URL plus the Modal-Key / Modal-Secret proxy-auth pair the OCR
-    # deployment requires, injected as OCR_MODAL_KEY / OCR_MODAL_SECRET. Never
-    # baked into the image.
-    secrets=[modal.Secret.from_name("ocr-service")],
+    # Base URL plus the Modal-Key / Modal-Secret proxy-auth pair each GPU
+    # deployment requires, injected as OCR_* and EXTRACT_* environment
+    # variables. Never baked into the image.
+    secrets=[
+        modal.Secret.from_name("ocr-service"),
+        modal.Secret.from_name("extract-service"),
+    ],
     cpu=2.0,
     # LibreOffice conversions are memory-hungry, and several run concurrently.
     memory=4096,
@@ -40,6 +43,8 @@ app = modal.App("port-extract", image=image)
     timeout=900,
     # Keep containers warm between bursts so LibreOffice boots are not repaid.
     scaledown_window=300,
+    # Always keep one container resident, so no request ever pays a cold start.
+    min_containers=1,
 )
 # Without this a container serves one request at a time, which would idle the
 # router's 5 xlsx + 5 PDF conversion thread limiters. target_inputs leaves

@@ -1,10 +1,11 @@
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 
 from app.core.config import get_settings
 from app.core.logger import get_logger
 from app.routers import text_extract
+from app.utils.extract_client import ExtractClient
 from app.utils.ocr_client import OcrClient
 from app.utils.office import CONVERTIBLE_EXTENSIONS, find_soffice
 
@@ -29,15 +30,22 @@ def _check_libreoffice() -> None:
 async def lifespan(app: FastAPI):
     _check_libreoffice()
 
-    # One client for the whole process, so its connection pool and page
-    # semaphore are shared by every request instead of per-request.
-    client = OcrClient(get_settings())
-    app.state.ocr_client = client
+    # One client each for the whole process, so their connection pools and
+    # concurrency semaphores are shared by every request instead of
+    # per-request.
+    settings = get_settings()
+    ocr_client = OcrClient(settings)
+    extract_client = ExtractClient(settings)
+    app.state.ocr_client = ocr_client
+    app.state.extract_client = extract_client
 
     try:
         yield
     finally:
-        await client.aclose()
+        # Close both even if the first raises.
+        async with AsyncExitStack() as stack:
+            stack.push_async_callback(extract_client.aclose)
+            stack.push_async_callback(ocr_client.aclose)
 
 
 app = FastAPI(title="Port", version="0.0.1", lifespan=lifespan)

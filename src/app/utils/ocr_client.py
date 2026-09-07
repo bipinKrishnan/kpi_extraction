@@ -89,6 +89,11 @@ class OcrClient:
                 "Modal-Secret": settings.ocr_modal_secret.get_secret_value(),
             },
             timeout=REQUEST_TIMEOUT_SECONDS,
+            # Modal answers 303 See Other while a container is still
+            # cold-starting, pointing at a URL that resumes waiting on the
+            # already-queued input. Following it is what turns a cold start
+            # back into a slow request instead of a hard failure.
+            follow_redirects=True,
             limits=httpx.Limits(
                 max_connections=OCR_CONCURRENCY,
                 max_keepalive_connections=OCR_CONCURRENCY,
