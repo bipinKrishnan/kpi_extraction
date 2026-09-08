@@ -59,6 +59,12 @@ EXTRACT_CONCURRENCY = 32
 # this are reported as failures rather than silently truncated, since a
 # dropped tail means silently missing KPIs.
 EXTRACT_MAX_INPUT_CHARS = 12_000
+# The KPI pass prepends a short reporting-period line to a unit's markdown (see
+# `_unit_message` in `app.utils.extract_client`), so a unit's own content may
+# use slightly less than the request budget above. Generous next to the ~50
+# chars that line actually costs, since overshooting the window is a hard
+# server-side rejection rather than a truncated answer.
+EXTRACT_PREFIX_RESERVE_CHARS = 128
 
 # --- document-level header pass ---
 # Hardcoded for now: every upload is a Kedrion report, so asking the model for

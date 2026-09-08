@@ -9,6 +9,7 @@ from app.core.concurrency import run_limited
 from app.core.config import (
     COMPANY_NAME,
     EXTRACT_MAX_INPUT_CHARS,
+    EXTRACT_PREFIX_RESERVE_CHARS,
     HEADER_UNIT_COUNT,
 )
 from app.core.deps import get_extract_client, get_ocr_client
@@ -48,6 +49,10 @@ MAX_FILES_PER_REQUEST = 20
 MAX_FILE_BYTES = 20 * 1024 * 1024
 # 10 MB of PDF can be hundreds of pages, and every page is one OCR request.
 MAX_PAGES_PER_FILE = 100
+
+# What a unit's own markdown may use, once the KPI pass's reporting-period
+# prefix has been allowed for.
+UNIT_CONTENT_BUDGET = EXTRACT_MAX_INPUT_CHARS - EXTRACT_PREFIX_RESERVE_CHARS
 
 # Used when no header pass ran (xlsx) or when it failed. Read-only, so one
 # shared instance is safe.
@@ -365,13 +370,13 @@ def _extractable(unit: ExtractedUnit) -> bool:
     if not unit.content.strip():
         return False
 
-    if len(unit.content) > EXTRACT_MAX_INPUT_CHARS:
+    if len(unit.content) > UNIT_CONTENT_BUDGET:
         logger.warning(
             "Skipping extraction for '%s' %s: %d chars exceeds the %d char budget",
             unit.source,
             unit.label,
             len(unit.content),
-            EXTRACT_MAX_INPUT_CHARS,
+            UNIT_CONTENT_BUDGET,
         )
         return False
 
@@ -417,18 +422,24 @@ async def _extract_all_units(
     monthly value and YTD value are printed on different pages comes back as
     two separate extractions.
     """
-    eligible = [unit for unit in units if _extractable(unit)]
+    # Each unit's header is resolved once, up front: the KPI call needs the
+    # reporting period as context, and the response needs the whole header.
+    eligible = [
+        (unit, headers.get(unit.source, NO_HEADER))
+        for unit in units
+        if _extractable(unit)
+    ]
     logger.info("Extracting KPIs from %d of %d unit(s)", len(eligible), len(units))
 
     results: list[KpiPageExtraction | None] = await asyncio.gather(
         *(
             _or_fallback(
-                client.extract_unit(unit.content),
+                client.extract_unit(unit.content, header.reporting_period),
                 None,
                 _unit_label(unit),
                 "Structured extraction",
             )
-            for unit in eligible
+            for unit, header in eligible
         )
     )
     pairs = list(zip(eligible, results, strict=True))
@@ -437,12 +448,12 @@ async def _extract_all_units(
         UnitExtraction(
             source=unit.source,
             label=unit.label,
-            data=_with_document(result, unit, headers.get(unit.source, NO_HEADER)),
+            data=_with_document(result, unit, header),
         )
-        for unit, result in pairs
+        for (unit, header), result in pairs
         if result is not None
     ]
-    failed = [_unit_label(unit) for unit, result in pairs if result is None]
+    failed = [_unit_label(unit) for (unit, _), result in pairs if result is None]
 
     if failed:
         logger.warning("Units that failed extraction: %s", ", ".join(failed))

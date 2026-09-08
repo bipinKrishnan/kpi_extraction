@@ -53,6 +53,23 @@ _KPI_RESPONSE_FORMAT = _response_format(EXTRACT_SCHEMA_NAME, KpiPageExtraction)
 _HEADER_RESPONSE_FORMAT = _response_format(HEADER_SCHEMA_NAME, HeaderExtraction)
 
 
+def _unit_message(text: str, reporting_period: str | None) -> str:
+    """Prefix one unit's markdown with the report's reporting period.
+
+    Goes in the user message rather than the system prompt: the system prompt
+    has to stay byte-identical for the server's prefix cache to reuse its
+    prefill, so anything per-request belongs after it.
+
+    Omitted entirely when the period is unknown -- xlsx uploads, where no
+    header pass runs, and uploads whose header pass failed. The prompt covers
+    that case, so there is nothing to substitute here.
+    """
+    if reporting_period is None:
+        return text
+
+    return f"Reporting period of this report: {reporting_period}\n\n---\n\n{text}"
+
+
 def _payload(
     system_prompt: str,
     text: str,
@@ -156,13 +173,20 @@ class ExtractClient:
         """Release the connection pool. Called once, at shutdown."""
         await self._http.aclose()
 
-    async def extract_unit(self, text: str) -> KpiPageExtraction:
-        """Return the KPI figures found in one page or sheet."""
+    async def extract_unit(
+        self, text: str, reporting_period: str | None = None
+    ) -> KpiPageExtraction:
+        """Return the KPI figures found in one page or sheet.
+
+        `reporting_period` is the document-level period read once by the header
+        pass. It is given to the model as context for resolving relative period
+        labels, not as a default period for undated figures.
+        """
         return await self._call(
             KpiPageExtraction,
             _payload(
                 KPI_EXTRACTION_SYSTEM_PROMPT,
-                text,
+                _unit_message(text, reporting_period),
                 max_tokens=EXTRACT_MAX_TOKENS,
                 response_format=_KPI_RESPONSE_FORMAT,
             ),

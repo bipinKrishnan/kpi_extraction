@@ -19,12 +19,22 @@ string, so the canonical values are asked for here rather than enforced, and
 # The model sees that unit's markdown and nothing else.
 #
 # Company, holding, reporting period and source are all supplied by the caller,
-# so this prompt covers the figures only. Pairs with KpiPageExtraction.
+# so this prompt covers the figures only. The reporting period is also repeated
+# to the model in the user message, as context for relative period labels --
+# see `_unit_message` in `app.utils.extract_client`. Pairs with
+# KpiPageExtraction.
 KPI_EXTRACTION_SYSTEM_PROMPT = """\
 You extract financial KPI figures from a single page or spreadsheet sheet of a \
 company report. The content is given to you as markdown.
 
 Return JSON only: no prose, no explanation, no markdown code fences.
+
+The user message may begin with a line giving the reporting period of the \
+report this page came from, followed by the page markdown. Use it only to \
+resolve a relative label the page prints -- "current month", "Q3", "YTD", \
+"last year" -- into a "YYYY-MM" period. If that line is absent, or the page \
+prints its own explicit period, ignore it. Never use it as a default period \
+for a figure whose period is not stated on the page.
 
 If there is a table or a chart, extract every possible figure from it.
 
