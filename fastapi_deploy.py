@@ -39,8 +39,8 @@ app = modal.App("port-extract", image=image)
     cpu=2.0,
     # LibreOffice conversions are memory-hungry, and several run concurrently.
     memory=4096,
-    # The default 300s is short for a batch of conversions.
-    timeout=900,
+    # leave it to 1 hour for now
+    timeout=60*60,
     # Keep containers warm between bursts so LibreOffice boots are not repaid.
     scaledown_window=300,
     # Always keep one container resident, so no request ever pays a cold start.
