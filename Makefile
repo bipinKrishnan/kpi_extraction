@@ -17,7 +17,7 @@ check:
 # them. .NOTPARALLEL keeps that order even under `make -j`.
 .NOTPARALLEL:
 
-deploy: deploy-ocr deploy-gemma deploy-fastapi
+deploy: deploy-ocr deploy-gemma deploy-fastapi deploy-web-app
 
 deploy-ocr:
 	uv run modal deploy src/ocr/modal_app.py
@@ -27,6 +27,9 @@ deploy-gemma:
 
 deploy-fastapi:
 	uv run modal deploy fastapi_deploy.py
+
+deploy-web-app:
+	uv run modal deploy src/frontend/modal_app.py
 
 # Stops every app that is still running (deployed or ephemeral).
 modal-stop:
