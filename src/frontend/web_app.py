@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 
 import pandas as pd
 import requests
@@ -168,9 +167,9 @@ def display_kpi_view(df):
                     else "Unknown"
                 )
 
-                # --------------------------------------------
+                # ------------------------------------------------
                 # PAGE FOLD
-                # --------------------------------------------
+                # ------------------------------------------------
 
                 if pd.notna(holding) and holding:
                     page_title = (
@@ -334,176 +333,168 @@ if uploaded_files:
         use_container_width=True,
     ):
 
-        all_rows = []
+        # ====================================================
+        # Prepare request
+        # ====================================================
+
+        headers = {
+            "Modal-Key": MODAL_KEY,
+            "Modal-Secret": MODAL_SECRET,
+        }
 
         progress = st.progress(0)
 
-        for file_index, uploaded_file in enumerate(
-            uploaded_files
-        ):
+        try:
 
-            st.write(
-                f"Processing **{uploaded_file.name}**..."
-            )
+            # =================================================
+            # Prepare ALL uploaded files
+            #
+            # Important:
+            #
+            # The same multipart field name "files" is used
+            # for every file. This allows the backend to receive
+            # them as a list:
+            #
+            # files = [file1, file2, file3, ...]
+            # =================================================
 
-            try:
+            files = []
 
-                # --------------------------------------------
-                # Prepare multipart request
-                # --------------------------------------------
+            for uploaded_file in uploaded_files:
 
                 file_bytes = uploaded_file.getvalue()
 
-                files = {
-                    "files": (
-                        uploaded_file.name,
-                        file_bytes,
-                        uploaded_file.type
-                        or "application/octet-stream",
+                files.append(
+                    (
+                        "files",
+                        (
+                            uploaded_file.name,
+                            file_bytes,
+                            uploaded_file.type
+                            or "application/octet-stream",
+                        ),
                     )
-                }
-
-                headers = {
-                    "Modal-Key": MODAL_KEY,
-                    "Modal-Secret": MODAL_SECRET,
-                }
-
-                # --------------------------------------------
-                # Call extraction API
-                # --------------------------------------------
-
-                with st.spinner(
-                    f"Extracting {uploaded_file.name}..."
-                ):
-
-                    response = requests.post(
-                        ENDPOINT,
-                        headers=headers,
-                        files=files,
-                        timeout=3600,  # 1 hour
-                    )
-
-                response.raise_for_status()
-
-                response_data = response.json()
-
-                # --------------------------------------------
-                # Flatten response
-                # --------------------------------------------
-
-                df = flatten_extractions(
-                    response_data
                 )
 
-                if not df.empty:
-                    all_rows.append(df)
+            # =================================================
+            # Send ALL files in ONE request
+            # =================================================
 
-                    st.success(
-                        f"Completed: "
-                        f"{uploaded_file.name} — "
-                        f"{len(df)} observations"
-                    )
-                else:
-                    st.warning(
-                        f"No KPI observations found in "
-                        f"{uploaded_file.name}"
-                    )
+            with st.spinner(
+                f"Extracting {len(uploaded_files)} files..."
+            ):
 
-                # --------------------------------------------
-                # Show skipped / failed extractions
-                # --------------------------------------------
-
-                skipped = response_data.get(
-                    "skipped",
-                    [],
+                response = requests.post(
+                    ENDPOINT,
+                    headers=headers,
+                    files=files,
+                    timeout=3600,  # 1 hour
                 )
 
-                failed = response_data.get(
-                    "failed_extractions",
-                    [],
-                )
+            response.raise_for_status()
 
-                if skipped:
-                    with st.expander(
-                        f"⚠️ Skipped items "
-                        f"({len(skipped)})"
-                    ):
-                        st.json(skipped)
+            response_data = response.json()
 
-                if failed:
-                    with st.expander(
-                        f"❌ Failed extractions "
-                        f"({len(failed)})"
-                    ):
-                        st.json(failed)
+            progress.progress(1.0)
 
-            # ------------------------------------------------
-            # Error handling
-            # ------------------------------------------------
+            # =================================================
+            # Flatten combined response
+            # =================================================
 
-            except requests.exceptions.Timeout:
-
-                st.error(
-                    f"Timed out after 1 hour: "
-                    f"{uploaded_file.name}"
-                )
-
-            except requests.exceptions.HTTPError:
-
-                st.error(
-                    f"HTTP error for "
-                    f"{uploaded_file.name}: "
-                    # f"{response.status_code}"
-                )
-
-                # if response.text:
-                #     st.code(response.text)
-
-            except requests.exceptions.RequestException as e:
-
-                st.error(
-                    f"Request failed for "
-                    f"{uploaded_file.name}: {e}"
-                )
-
-            except ValueError:
-
-                st.error(
-                    f"The API returned invalid JSON for "
-                    f"{uploaded_file.name}."
-                )
-
-                if response.text:
-                    st.code(response.text)
-
-            except Exception as e:
-
-                st.error(
-                    f"Unexpected error processing "
-                    f"{uploaded_file.name}: {e}"
-                )
-
-            finally:
-
-                progress.progress(
-                    (file_index + 1)
-                    / len(uploaded_files)
-                )
-
-        # ====================================================
-        # Combined results
-        # ====================================================
-
-        if all_rows:
-
-            result_df = pd.concat(
-                all_rows,
-                ignore_index=True,
+            result_df = flatten_extractions(
+                response_data
             )
 
-            # Store dataframe in session state so it remains
-            # available after Streamlit reruns.
-            st.session_state["result_df"] = result_df
+            if not result_df.empty:
+
+                st.session_state["result_df"] = result_df
+
+                st.success(
+                    f"Completed {len(uploaded_files)} files — "
+                    f"{len(result_df)} observations"
+                )
+
+            else:
+
+                st.warning(
+                    "No KPI observations found."
+                )
+
+            # =================================================
+            # Show skipped items
+            # =================================================
+
+            skipped = response_data.get(
+                "skipped",
+                [],
+            )
+
+            if skipped:
+
+                with st.expander(
+                    f"⚠️ Skipped items ({len(skipped)})"
+                ):
+
+                    st.json(skipped)
+
+            # =================================================
+            # Show failed extractions
+            # =================================================
+
+            failed = response_data.get(
+                "failed_extractions",
+                [],
+            )
+
+            if failed:
+
+                with st.expander(
+                    f"❌ Failed extractions "
+                    f"({len(failed)})"
+                ):
+
+                    st.json(failed)
+
+        # ====================================================
+        # Error handling
+        # ====================================================
+
+        except requests.exceptions.Timeout:
+
+            st.error(
+                "The extraction request timed out after 1 hour."
+            )
+
+        except requests.exceptions.HTTPError:
+
+            st.error(
+                f"HTTP error from extraction API: "
+                f"{response.status_code}"
+            )
+
+            if response.text:
+                st.code(response.text)
+
+        except requests.exceptions.RequestException as e:
+
+            st.error(
+                f"Request failed: {e}"
+            )
+
+        except ValueError:
+
+            st.error(
+                "The API returned invalid JSON."
+            )
+
+            if response.text:
+                st.code(response.text)
+
+        except Exception as e:
+
+            st.error(
+                f"Unexpected error during extraction: {e}"
+            )
 
 
 # ============================================================
@@ -562,7 +553,10 @@ if "result_df" in st.session_state:
 
     st.subheader("Export")
 
+    # --------------------------------------------------------
     # Normalized CSV
+    # --------------------------------------------------------
+
     csv_data = result_df.to_csv(
         index=False
     ).encode("utf-8")
@@ -574,7 +568,10 @@ if "result_df" in st.session_state:
         mime="text/csv",
     )
 
+    # --------------------------------------------------------
     # Excel
+    # --------------------------------------------------------
+
     excel_path = "kpi_observations.xlsx"
 
     with pd.ExcelWriter(
