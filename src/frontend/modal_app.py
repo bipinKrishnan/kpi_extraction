@@ -11,7 +11,7 @@ image = (
     )
 )
 
-app = modal.App("kpi-streamlit", image=image)
+app = modal.App("veroport", image=image)
 
 
 @app.function(
@@ -29,7 +29,7 @@ app = modal.App("kpi-streamlit", image=image)
     8501,
     startup_timeout=120,
 )
-def streamlit():
+def veroport():
 
     subprocess.Popen(
         [

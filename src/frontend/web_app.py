@@ -1,4 +1,6 @@
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import requests
@@ -30,7 +32,21 @@ if not MODAL_SECRET:
 
 ENDPOINT = f"{WORKSPACE_URL.rstrip('/')}/extract/text"
 
-ALLOWED_EXTENSIONS = ["pdf", "pptx", "xlsx", "docx"]
+ALLOWED_EXTENSIONS = ["pdf", "pptx", "docx"]
+
+# Maximum number of files allowed in one batch.
+MAX_FILES = 20
+
+# Maximum size of each individual file.
+MAX_FILE_SIZE_MB = 50
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+
+# Maximum number of requests that can be running concurrently.
+MAX_WORKERS = 5
+
+# Delay between STARTING requests.
+# Important: this does NOT wait for the previous request to finish.
+REQUEST_START_DELAY_SECONDS = 2
 
 
 # ============================================================
@@ -41,20 +57,6 @@ def flatten_extractions(response_data):
     """
     Convert the nested extraction response into one row per
     KPI observation.
-
-    Output columns:
-
-        source
-        company
-        holding
-        label
-        kpi
-        measure
-        period
-        period_type
-        value
-        currency
-        unit
     """
 
     rows = []
@@ -95,12 +97,107 @@ def flatten_extractions(response_data):
 
 
 # ============================================================
+# Extract a single file
+# ============================================================
+
+def extract_single_file(uploaded_file, headers):
+    """
+    Send exactly one file in exactly one HTTP request.
+    """
+
+    filename = uploaded_file.name
+
+    try:
+        file_bytes = uploaded_file.getvalue()
+
+        files = {
+            "files": (
+                filename,
+                file_bytes,
+                uploaded_file.type
+                or "application/octet-stream",
+            )
+        }
+
+        response = requests.post(
+            ENDPOINT,
+            headers=headers,
+            files=files,
+            timeout=3600,
+        )
+
+        response.raise_for_status()
+
+        return {
+            "filename": filename,
+            "success": True,
+            "response_data": response.json(),
+            "error": None,
+        }
+
+    except requests.exceptions.Timeout:
+        return {
+            "filename": filename,
+            "success": False,
+            "response_data": None,
+            "error": "Request timed out after 1 hour.",
+        }
+
+    except requests.exceptions.HTTPError as e:
+        status_code = (
+            e.response.status_code
+            if e.response is not None
+            else "unknown"
+        )
+
+        response_text = (
+            e.response.text
+            if e.response is not None
+            else ""
+        )
+
+        return {
+            "filename": filename,
+            "success": False,
+            "response_data": None,
+            "error": (
+                f"HTTP {status_code}"
+                + (f": {response_text}" if response_text else "")
+            ),
+        }
+
+    except requests.exceptions.RequestException as e:
+        return {
+            "filename": filename,
+            "success": False,
+            "response_data": None,
+            "error": f"Request failed: {e}",
+        }
+
+    except ValueError:
+        return {
+            "filename": filename,
+            "success": False,
+            "response_data": None,
+            "error": "The API returned invalid JSON.",
+        }
+
+    except Exception as e:
+        return {
+            "filename": filename,
+            "success": False,
+            "response_data": None,
+            "error": f"Unexpected error: {e}",
+        }
+
+
+# ============================================================
 # Display KPI-centric grouped view
 # ============================================================
 
 def display_kpi_view(df):
     """
-    Display KPI observations using a collapsible hierarchy:
+    Display KPI observations using:
 
         Source document
             -> Page / label
@@ -112,10 +209,6 @@ def display_kpi_view(df):
     if df.empty:
         st.warning("No KPI observations found.")
         return
-
-    # ========================================================
-    # Group by source document
-    # ========================================================
 
     for source, source_df in df.groupby(
         "source",
@@ -129,19 +222,11 @@ def display_kpi_view(df):
             else "Unknown source"
         )
 
-        # ----------------------------------------------------
-        # SOURCE FOLD
-        # ----------------------------------------------------
-
         with st.expander(
             f"📄 {source_name} "
             f"({len(source_df)} observations)",
             expanded=True,
         ):
-
-            # =================================================
-            # Group by page / label
-            # =================================================
 
             page_groups = source_df.groupby(
                 ["company", "holding", "label"],
@@ -167,10 +252,6 @@ def display_kpi_view(df):
                     else "Unknown"
                 )
 
-                # ------------------------------------------------
-                # PAGE FOLD
-                # ------------------------------------------------
-
                 if pd.notna(holding) and holding:
                     page_title = (
                         f"📄 Page {page_name} · "
@@ -190,10 +271,6 @@ def display_kpi_view(df):
                     expanded=True,
                 ):
 
-                    # =========================================
-                    # Group by KPI
-                    # =========================================
-
                     for kpi, kpi_df in page_df.groupby(
                         "kpi",
                         sort=False,
@@ -208,19 +285,11 @@ def display_kpi_view(df):
 
                         observation_count = len(kpi_df)
 
-                        # -------------------------------------
-                        # KPI FOLD
-                        # -------------------------------------
-
                         with st.expander(
                             f"**{kpi_name}** "
                             f"({observation_count} observations)",
                             expanded=True,
                         ):
-
-                            # ================================
-                            # Group by measure
-                            # ================================
 
                             for measure, measure_df in kpi_df.groupby(
                                 "measure",
@@ -240,12 +309,7 @@ def display_kpi_view(df):
 
                                 display_rows = []
 
-                                # --------------------------------
-                                # Build observation table
-                                # --------------------------------
-
                                 for _, row in measure_df.iterrows():
-
                                     display_rows.append(
                                         {
                                             "Period": row["period"],
@@ -255,16 +319,12 @@ def display_kpi_view(df):
                                             "Value": row["value"],
                                             "Currency": (
                                                 row["currency"]
-                                                if pd.notna(
-                                                    row["currency"]
-                                                )
+                                                if pd.notna(row["currency"])
                                                 else "—"
                                             ),
                                             "Unit": (
                                                 row["unit"]
-                                                if pd.notna(
-                                                    row["unit"]
-                                                )
+                                                if pd.notna(row["unit"])
                                                 else "—"
                                             ),
                                         }
@@ -286,17 +346,19 @@ def display_kpi_view(df):
 # ============================================================
 
 st.set_page_config(
-    page_title="KPI Extractor",
+    page_title="VeroPort",
     page_icon="📊",
     layout="wide",
 )
 
-st.title("📊 KPI Extractor")
+st.title("📊 VeroPort Extract")
 
 st.write(
     "Upload financial documents and extract KPI observations. "
-    "Results are grouped by source document, company, page, "
-    "KPI, and measure."
+    f"You can upload up to {MAX_FILES} files, with each file "
+    f"limited to {MAX_FILE_SIZE_MB} MB. Each file is sent as a "
+    "separate request. Requests are started 2 seconds apart "
+    "and run concurrently."
 )
 
 
@@ -305,27 +367,81 @@ st.write(
 # ============================================================
 
 uploaded_files = st.file_uploader(
-    "Choose files",
+    f"Choose files (maximum {MAX_FILES} files, "
+    f"{MAX_FILE_SIZE_MB} MB per file)",
     type=ALLOWED_EXTENSIONS,
     accept_multiple_files=True,
 )
 
 
 # ============================================================
-# Process files
+# Validate uploaded files
 # ============================================================
 
 if uploaded_files:
 
-    st.subheader("Selected files")
+    # --------------------------------------------------------
+    # Validate number of files
+    # --------------------------------------------------------
+
+    if len(uploaded_files) > MAX_FILES:
+
+        st.error(
+            f"You selected {len(uploaded_files)} files. "
+            f"The maximum allowed is {MAX_FILES} files."
+        )
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # Validate individual file sizes
+    # --------------------------------------------------------
+
+    oversized_files = [
+        uploaded_file
+        for uploaded_file in uploaded_files
+        if uploaded_file.size > MAX_FILE_SIZE_BYTES
+    ]
+
+    if oversized_files:
+
+        st.error(
+            f"{len(oversized_files)} file(s) exceed the "
+            f"{MAX_FILE_SIZE_MB} MB per-file limit."
+        )
+
+        for uploaded_file in oversized_files:
+
+            size_mb = uploaded_file.size / (1024 * 1024)
+
+            st.error(
+                f"📄 **{uploaded_file.name}** — "
+                f"{size_mb:.2f} MB "
+                f"(maximum {MAX_FILE_SIZE_MB} MB)"
+            )
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # Display selected files
+    # --------------------------------------------------------
+
+    st.subheader(
+        f"Selected files ({len(uploaded_files)}/{MAX_FILES})"
+    )
 
     for uploaded_file in uploaded_files:
-        size_kb = uploaded_file.size / 1024
+
+        size_mb = uploaded_file.size / (1024 * 1024)
 
         st.write(
             f"📄 **{uploaded_file.name}** "
-            f"({size_kb:.1f} KB)"
+            f"({size_mb:.2f} MB)"
         )
+
+    # ========================================================
+    # Process files
+    # ========================================================
 
     if st.button(
         "🚀 Extract KPIs",
@@ -333,96 +449,153 @@ if uploaded_files:
         use_container_width=True,
     ):
 
-        # ====================================================
-        # Prepare request
-        # ====================================================
-
         headers = {
             "Modal-Key": MODAL_KEY,
             "Modal-Secret": MODAL_SECRET,
         }
 
+        total_files = len(uploaded_files)
+
         progress = st.progress(0)
+        status_text = st.empty()
 
-        try:
+        results = []
 
-            # =================================================
-            # Prepare ALL uploaded files
-            #
-            # Important:
-            #
-            # The same multipart field name "files" is used
-            # for every file. This allows the backend to receive
-            # them as a list:
-            #
-            # files = [file1, file2, file3, ...]
-            # =================================================
+        # ====================================================
+        # Submit requests with a 2-second delay between starts
+        #
+        # IMPORTANT:
+        #
+        # Request 1 starts
+        #       ↓
+        # 2 second delay
+        #       ↓
+        # Request 2 starts
+        #       ↓
+        # 2 second delay
+        #       ↓
+        # Request 3 starts
+        #
+        # The previous requests DO NOT need to complete before
+        # the next request starts.
+        # ====================================================
 
-            files = []
+        with st.spinner(
+            f"Starting {total_files} extraction requests..."
+        ):
 
-            for uploaded_file in uploaded_files:
+            with ThreadPoolExecutor(
+                max_workers=min(MAX_WORKERS, total_files)
+            ) as executor:
 
-                file_bytes = uploaded_file.getvalue()
+                futures = []
 
-                files.append(
-                    (
-                        "files",
-                        (
-                            uploaded_file.name,
-                            file_bytes,
-                            uploaded_file.type
-                            or "application/octet-stream",
-                        ),
+                for index, uploaded_file in enumerate(
+                    uploaded_files
+                ):
+
+                    # Wait 2 seconds BEFORE starting every
+                    # request except the first one.
+                    if index > 0:
+                        time.sleep(
+                            REQUEST_START_DELAY_SECONDS
+                        )
+
+                    future = executor.submit(
+                        extract_single_file,
+                        uploaded_file,
+                        headers,
                     )
+
+                    futures.append(
+                        (
+                            future,
+                            uploaded_file.name,
+                        )
+                    )
+
+                    status_text.info(
+                        f"Started {index + 1}/{total_files}: "
+                        f"{uploaded_file.name}"
+                    )
+
+                # =================================================
+                # Collect results as requests complete.
+                #
+                # Completion order can be different from the
+                # upload order.
+                # =================================================
+
+                completed = 0
+
+                for future, filename in futures:
+
+                    try:
+                        result = future.result()
+
+                    except Exception as e:
+                        result = {
+                            "filename": filename,
+                            "success": False,
+                            "response_data": None,
+                            "error": f"Unexpected worker error: {e}",
+                        }
+
+                    results.append(result)
+
+                    completed += 1
+
+                    progress.progress(
+                        completed / total_files
+                    )
+
+                    if result["success"]:
+                        status_text.success(
+                            f"Completed {completed}/{total_files}: "
+                            f"{filename}"
+                        )
+                    else:
+                        status_text.error(
+                            f"Failed {completed}/{total_files}: "
+                            f"{filename}"
+                        )
+
+        # ====================================================
+        # Aggregate results
+        # ====================================================
+
+        all_rows = []
+        all_skipped = []
+        all_failed_extractions = []
+        request_failures = []
+
+        successful_files = 0
+
+        for result in results:
+
+            filename = result["filename"]
+
+            if not result["success"]:
+
+                request_failures.append(
+                    {
+                        "file": filename,
+                        "error": result["error"],
+                    }
                 )
 
-            # =================================================
-            # Send ALL files in ONE request
-            # =================================================
+                continue
 
-            with st.spinner(
-                f"Extracting {len(uploaded_files)} files..."
-            ):
+            successful_files += 1
 
-                response = requests.post(
-                    ENDPOINT,
-                    headers=headers,
-                    files=files,
-                    timeout=3600,  # 1 hour
-                )
+            response_data = result["response_data"] or {}
 
-            response.raise_for_status()
-
-            response_data = response.json()
-
-            progress.progress(1.0)
-
-            # =================================================
-            # Flatten combined response
-            # =================================================
-
-            result_df = flatten_extractions(
+            file_df = flatten_extractions(
                 response_data
             )
 
-            if not result_df.empty:
-
-                st.session_state["result_df"] = result_df
-
-                st.success(
-                    f"Completed {len(uploaded_files)} files — "
-                    f"{len(result_df)} observations"
-                )
-
-            else:
-
-                st.warning(
-                    "No KPI observations found."
-                )
-
-            # =================================================
-            # Show skipped items
-            # =================================================
+            if not file_df.empty:
+                all_rows.append(file_df)
 
             skipped = response_data.get(
                 "skipped",
@@ -430,16 +603,7 @@ if uploaded_files:
             )
 
             if skipped:
-
-                with st.expander(
-                    f"⚠️ Skipped items ({len(skipped)})"
-                ):
-
-                    st.json(skipped)
-
-            # =================================================
-            # Show failed extractions
-            # =================================================
+                all_skipped.extend(skipped)
 
             failed = response_data.get(
                 "failed_extractions",
@@ -447,54 +611,98 @@ if uploaded_files:
             )
 
             if failed:
-
-                with st.expander(
-                    f"❌ Failed extractions "
-                    f"({len(failed)})"
-                ):
-
-                    st.json(failed)
+                all_failed_extractions.extend(failed)
 
         # ====================================================
-        # Error handling
+        # Combine KPI observations
         # ====================================================
 
-        except requests.exceptions.Timeout:
+        if all_rows:
 
-            st.error(
-                "The extraction request timed out after 1 hour."
+            result_df = pd.concat(
+                all_rows,
+                ignore_index=True,
             )
 
-        except requests.exceptions.HTTPError:
+        else:
 
-            st.error(
-                f"HTTP error from extraction API: "
-                f"{response.status_code}"
+            result_df = pd.DataFrame()
+
+        # ====================================================
+        # Store results
+        # ====================================================
+
+        if not result_df.empty:
+
+            st.session_state["result_df"] = result_df
+
+            st.success(
+                f"Completed {successful_files}/{total_files} files — "
+                f"{len(result_df)} observations"
             )
 
-            if response.text:
-                st.code(response.text)
+        else:
 
-        except requests.exceptions.RequestException as e:
-
-            st.error(
-                f"Request failed: {e}"
+            st.session_state.pop(
+                "result_df",
+                None,
             )
 
-        except ValueError:
+            if successful_files:
 
-            st.error(
-                "The API returned invalid JSON."
-            )
+                st.warning(
+                    f"Completed {successful_files}/{total_files} files, "
+                    "but no KPI observations were found."
+                )
 
-            if response.text:
-                st.code(response.text)
+            else:
 
-        except Exception as e:
+                st.error(
+                    "All extraction requests failed."
+                )
 
-            st.error(
-                f"Unexpected error during extraction: {e}"
-            )
+        # ====================================================
+        # Request failures
+        # ====================================================
+
+        if request_failures:
+
+            with st.expander(
+                f"❌ Failed requests ({len(request_failures)})",
+                expanded=True,
+            ):
+
+                for failure in request_failures:
+
+                    st.error(
+                        f"**{failure['file']}** — "
+                        f"{failure['error']}"
+                    )
+
+        # ====================================================
+        # Skipped items
+        # ====================================================
+
+        if all_skipped:
+
+            with st.expander(
+                f"⚠️ Skipped items ({len(all_skipped)})"
+            ):
+
+                st.json(all_skipped)
+
+        # ====================================================
+        # Failed extractions
+        # ====================================================
+
+        if all_failed_extractions:
+
+            with st.expander(
+                f"❌ Failed extractions "
+                f"({len(all_failed_extractions)})"
+            ):
+
+                st.json(all_failed_extractions)
 
 
 # ============================================================
@@ -537,14 +745,6 @@ if "result_df" in st.session_state:
             len(result_df),
         )
 
-    # --------------------------------------------------------
-    # KPI-centric grouped view
-    # --------------------------------------------------------
-
-    st.header("KPI Observations")
-
-    display_kpi_view(result_df)
-
     # ========================================================
     # Downloads
     # ========================================================
@@ -552,21 +752,6 @@ if "result_df" in st.session_state:
     st.divider()
 
     st.subheader("Export")
-
-    # --------------------------------------------------------
-    # Normalized CSV
-    # --------------------------------------------------------
-
-    csv_data = result_df.to_csv(
-        index=False
-    ).encode("utf-8")
-
-    st.download_button(
-        label="⬇️ Download observations CSV",
-        data=csv_data,
-        file_name="kpi_observations.csv",
-        mime="text/csv",
-    )
 
     # --------------------------------------------------------
     # Excel
@@ -579,11 +764,253 @@ if "result_df" in st.session_state:
         engine="openpyxl",
     ) as writer:
 
-        result_df.to_excel(
-            writer,
-            index=False,
-            sheet_name="Observations",
+        workbook = writer.book
+        worksheet = workbook.create_sheet(
+            "KPI Observations"
         )
+
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+
+        current_row = 1
+
+        source_groups = result_df.groupby(
+            "source",
+            sort=False,
+            dropna=False,
+        )
+
+        for source, source_df in source_groups:
+
+            source_name = (
+                str(source)
+                if pd.notna(source)
+                else "Unknown source"
+            )
+
+            worksheet.cell(
+                current_row,
+                1,
+                f"📄 {source_name} "
+                f"({len(source_df)} observations)",
+            )
+
+            worksheet.cell(
+                current_row,
+                1,
+            ).font = Font(
+                bold=True,
+                size=14,
+            )
+
+            current_row += 1
+
+            page_groups = source_df.groupby(
+                ["company", "holding", "label"],
+                sort=False,
+                dropna=False,
+            )
+
+            for (
+                company,
+                holding,
+                label,
+            ), page_df in page_groups:
+
+                company_name = (
+                    str(company)
+                    if pd.notna(company)
+                    else "Unknown company"
+                )
+
+                page_name = (
+                    str(label)
+                    if pd.notna(label)
+                    else "Unknown"
+                )
+
+                if pd.notna(holding) and holding:
+
+                    page_title = (
+                        f"📄 Page {page_name} · "
+                        f"{company_name} · "
+                        f"Holding: {holding} "
+                        f"({len(page_df)} observations)"
+                    )
+
+                else:
+
+                    page_title = (
+                        f"📄 Page {page_name} · "
+                        f"{company_name} "
+                        f"({len(page_df)} observations)"
+                    )
+
+                worksheet.cell(
+                    current_row,
+                    1,
+                    page_title,
+                )
+
+                worksheet.cell(
+                    current_row,
+                    1,
+                ).font = Font(
+                    bold=True,
+                    size=12,
+                )
+
+                current_row += 1
+
+                for kpi, kpi_df in page_df.groupby(
+                    "kpi",
+                    sort=False,
+                    dropna=False,
+                ):
+
+                    kpi_name = (
+                        str(kpi)
+                        if pd.notna(kpi)
+                        else "Unnamed KPI"
+                    )
+
+                    observation_count = len(kpi_df)
+
+                    worksheet.cell(
+                        current_row,
+                        1,
+                        f"{kpi_name} "
+                        f"({observation_count} observations)",
+                    )
+
+                    worksheet.cell(
+                        current_row,
+                        1,
+                    ).font = Font(
+                        bold=True,
+                        size=11,
+                    )
+
+                    current_row += 1
+
+                    for measure, measure_df in kpi_df.groupby(
+                        "measure",
+                        sort=False,
+                        dropna=False,
+                    ):
+
+                        measure_name = (
+                            str(measure)
+                            if pd.notna(measure)
+                            else "Unknown"
+                        )
+
+                        worksheet.cell(
+                            current_row,
+                            1,
+                            f"Measure: {measure_name}",
+                        )
+
+                        worksheet.cell(
+                            current_row,
+                            1,
+                        ).font = Font(
+                            bold=True,
+                            italic=True,
+                        )
+
+                        current_row += 1
+
+                        headers = [
+                            "Period",
+                            "Period Type",
+                            "Value",
+                            "Currency",
+                            "Unit",
+                        ]
+
+                        for col, header in enumerate(
+                            headers,
+                            start=1,
+                        ):
+
+                            cell = worksheet.cell(
+                                current_row,
+                                col,
+                                header,
+                            )
+
+                            cell.font = Font(
+                                bold=True
+                            )
+
+                            cell.fill = PatternFill(
+                                fill_type="solid",
+                                fgColor="D9EAF7",
+                            )
+
+                            cell.alignment = Alignment(
+                                horizontal="center"
+                            )
+
+                        current_row += 1
+
+                        for _, row in measure_df.iterrows():
+
+                            values = [
+                                row["period"],
+                                row["period_type"],
+                                row["value"],
+                                (
+                                    row["currency"]
+                                    if pd.notna(row["currency"])
+                                    else "—"
+                                ),
+                                (
+                                    row["unit"]
+                                    if pd.notna(row["unit"])
+                                    else "—"
+                                ),
+                            ]
+
+                            for col, value in enumerate(
+                                values,
+                                start=1,
+                            ):
+
+                                worksheet.cell(
+                                    current_row,
+                                    col,
+                                    None
+                                    if pd.isna(value)
+                                    else value,
+                                )
+
+                            current_row += 1
+
+                        current_row += 1
+
+                    current_row += 1
+
+                current_row += 1
+
+            current_row += 1
+
+        widths = {
+            1: 55,
+            2: 18,
+            3: 18,
+            4: 16,
+            5: 16,
+        }
+
+        for col_idx, width in widths.items():
+
+            worksheet.column_dimensions[
+                get_column_letter(col_idx)
+            ].width = width
+
+        worksheet.freeze_panes = "A1"
 
     with open(excel_path, "rb") as f:
         excel_data = f.read()
@@ -597,3 +1024,11 @@ if "result_df" in st.session_state:
             "officedocument.spreadsheetml.sheet"
         ),
     )
+
+    # --------------------------------------------------------
+    # KPI-centric grouped view
+    # --------------------------------------------------------
+
+    st.header("KPI Observations")
+
+    display_kpi_view(result_df)
