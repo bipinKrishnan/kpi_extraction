@@ -96,56 +96,6 @@ def flatten_extractions(response_data):
 
 
 # ============================================================
-# Format value for display
-# ============================================================
-
-def format_value(value, currency=None, unit=None):
-    """
-    Format KPI values for human-readable display.
-
-    Examples:
-        12400000 + GBP + £ -> £12.4m GBP
-        2800000 + GBP + £  -> £2.8m GBP
-        45.2 + None + %    -> 45.2%
-    """
-
-    if value is None:
-        return "—"
-
-    try:
-        numeric_value = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-
-    # Format large values
-    abs_value = abs(numeric_value)
-
-    if abs_value >= 1_000_000_000:
-        formatted = f"{numeric_value / 1_000_000_000:.2f}bn"
-    elif abs_value >= 1_000_000:
-        formatted = f"{numeric_value / 1_000_000:.2f}m"
-    elif abs_value >= 1_000:
-        formatted = f"{numeric_value / 1_000:.2f}k"
-    else:
-        formatted = f"{numeric_value:,.2f}".rstrip("0").rstrip(".")
-
-    # Percentage
-    if unit == "%":
-        return f"{formatted}%"
-
-    # Currency symbol + value + currency code
-    if unit:
-        return f"{unit}{formatted}" + (
-            f" {currency}" if currency else ""
-        )
-
-    if currency:
-        return f"{formatted} {currency}"
-
-    return formatted
-
-
-# ============================================================
 # Display KPI-centric grouped view
 # ============================================================
 
@@ -436,9 +386,6 @@ if uploaded_files:
                 response.raise_for_status()
 
                 response_data = response.json()
-                    # import json
-                    # with open("/home/bipin/projects/port_sample/src/frontend/response.json", "r") as f:
-                    #     response_data = json.load(f)
 
                 # --------------------------------------------
                 # Flatten response
