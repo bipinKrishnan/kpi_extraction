@@ -31,7 +31,7 @@ EXTRACT_MODEL_NAME = "extract"  # --served-model-name in src/extract/modal_app.p
 EXTRACT_SCHEMA_NAME = "kpi-extraction"  # label only; vLLM does not interpret it
 # Extraction must be reproducible, so no sampling at all. Re-running a unit has
 # to give the same JSON, otherwise a failed validation is unreproducible.
-EXTRACT_TEMPERATURE = 0.0
+EXTRACT_TEMPERATURE = 1.5
 EXTRACT_TOP_P = 1.0
 # A dense table page can hold many KPIs, each with several observations. Too
 # low and the answer is truncated mid-JSON, which is unparseable rather than

@@ -102,7 +102,9 @@ class Observation(_Strict):
     period_type: PeriodType
     measure: Measure
     value: float
+    unit: str | None
     currency: str | None
+    dimensions: dict[str, str] | None
 
     @field_validator("period")
     @classmethod
@@ -128,7 +130,6 @@ class Kpi(_Strict):
     """One metric named on the page, with every figure reported for it."""
 
     name: str
-    unit: str | None
     observations: list[Observation]
 
 

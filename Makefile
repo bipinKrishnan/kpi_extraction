@@ -19,6 +19,8 @@ check:
 
 deploy: deploy-ocr deploy-gemma deploy-fastapi deploy-web-app
 
+deploy-backend: deploy-ocr deploy-gemma deploy-fastapi
+
 deploy-ocr:
 	uv run modal deploy src/ocr/modal_app.py
 

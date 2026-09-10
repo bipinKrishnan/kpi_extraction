@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 from pydantic import BaseModel, ValidationError
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from app.core.config import (
     CHAT_COMPLETIONS_PATH,
@@ -206,6 +207,10 @@ class ExtractClient:
             "Header extraction",
         )
 
+    @retry(
+        stop=stop_after_attempt(MAX_RETRIES),
+        wait=wait_fixed(3),
+    )
     async def _call[T: BaseModel](
         self, model: type[T], payload: dict[str, Any], what: str
     ) -> T:
@@ -215,7 +220,7 @@ class ExtractClient:
                 self._http,
                 CHAT_COMPLETIONS_PATH,
                 payload,
-                max_retries=MAX_RETRIES,
+                max_retries=1,
                 what=what,
             )
 
