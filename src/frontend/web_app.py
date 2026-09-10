@@ -1,6 +1,6 @@
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import requests
@@ -41,12 +41,169 @@ MAX_FILES = 20
 MAX_FILE_SIZE_MB = 50
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
-# Maximum number of requests that can be running concurrently.
+# Maximum number of requests running concurrently.
 MAX_WORKERS = 5
 
 # Delay between STARTING requests.
-# Important: this does NOT wait for the previous request to finish.
 REQUEST_START_DELAY_SECONDS = 2
+
+
+# ============================================================
+# Dimension helpers
+# ============================================================
+
+def normalize_dimensions(dimensions):
+    """
+    Normalize an observation's dimensions into a dictionary.
+
+    Supported examples:
+
+        None
+            -> {}
+
+        {}
+            -> {}
+
+        {
+            "region": "Europe",
+            "segment": "Retail"
+        }
+            -> same dictionary
+
+        [
+            {"region": "Europe"},
+            {"segment": "Retail"}
+        ]
+            -> {
+                "region": "Europe",
+                "segment": "Retail"
+            }
+
+    If dimensions cannot be interpreted as key-value pairs,
+    an empty dictionary is returned.
+    """
+
+    if dimensions is None:
+        return {}
+
+    # Normal case:
+    # dimensions is already a dictionary.
+    if isinstance(dimensions, dict):
+        return dimensions
+
+    # Defensive support for a list of dictionaries.
+    if isinstance(dimensions, list):
+
+        normalized = {}
+
+        for item in dimensions:
+
+            if isinstance(item, dict):
+                normalized.update(item)
+
+        return normalized
+
+    return {}
+
+
+def get_dimension_keys_for_observations(observations):
+    """
+    Get the dimension keys ONLY for one observations list.
+
+    This is intentionally NOT calculated across the entire
+    dataframe.
+
+    Example:
+
+        observations = [
+            {
+                "dimensions": {
+                    "region": "Europe",
+                    "segment": "Retail"
+                }
+            },
+            {
+                "dimensions": {
+                    "region": "Asia",
+                    "segment": "Wholesale"
+                }
+            }
+        ]
+
+    returns:
+
+        ["region", "segment"]
+
+    If another KPI has:
+
+        {
+            "dimensions": {
+                "scope": "Group"
+            }
+        }
+
+    "scope" will NOT be added to the first observations list.
+    """
+
+    dimension_keys = []
+
+    seen = set()
+
+    for observation in observations:
+
+        dimensions = normalize_dimensions(
+            observation.get("dimensions")
+        )
+
+        for key in dimensions.keys():
+
+            key = str(key)
+
+            if key not in seen:
+
+                seen.add(key)
+                dimension_keys.append(key)
+
+    return dimension_keys
+
+
+def get_dimension_keys_for_dataframe(measure_df):
+    """
+    Get dimension keys for one measure dataframe only.
+
+    The dataframe is expected to contain a 'dimensions'
+    column where each cell contains a dictionary or None.
+
+    This is used by the Excel export.
+
+    IMPORTANT:
+    This function is called separately for every measure_df,
+    so dimensions remain independent between observation lists.
+    """
+
+    dimension_keys = []
+
+    seen = set()
+
+    if "dimensions" not in measure_df.columns:
+        return dimension_keys
+
+    for dimensions in measure_df["dimensions"]:
+
+        dimensions = normalize_dimensions(
+            dimensions
+        )
+
+        for key in dimensions.keys():
+
+            key = str(key)
+
+            if key not in seen:
+
+                seen.add(key)
+                dimension_keys.append(key)
+
+    return dimension_keys
 
 
 # ============================================================
@@ -57,26 +214,65 @@ def flatten_extractions(response_data):
     """
     Convert the nested extraction response into one row per
     KPI observation.
+
+    IMPORTANT:
+
+    Dimensions are deliberately NOT flattened here.
+
+    They are kept as dictionaries so that they can later be
+    expanded independently for each observations/measure list.
+
+    Example:
+
+        dimensions:
+        {
+            "region": "Europe",
+            "segment": "Retail"
+        }
+
+    stays as:
+
+        {
+            "region": "Europe",
+            "segment": "Retail"
+        }
+
+    inside the dataframe.
     """
 
     rows = []
 
-    for extraction in response_data.get("extractions", []):
+    for extraction in response_data.get(
+        "extractions",
+        [],
+    ):
+
         source = extraction.get("source")
         label = extraction.get("label")
 
         data = extraction.get("data") or {}
+
         document = data.get("document") or {}
+
         kpis = data.get("kpis") or []
 
         company = document.get("company")
         holding = document.get("holding")
 
         for kpi in kpis:
-            kpi_name = kpi.get("name")
-            unit = kpi.get("unit")
 
-            for observation in kpi.get("observations") or []:
+            kpi_name = kpi.get("name")
+
+            observations = kpi.get(
+                "observations"
+            ) or []
+
+            for observation in observations:
+
+                dimensions = normalize_dimensions(
+                    observation.get("dimensions")
+                )
+
                 rows.append(
                     {
                         "source": source,
@@ -84,14 +280,33 @@ def flatten_extractions(response_data):
                         "holding": holding,
                         "label": label,
                         "kpi": kpi_name,
-                        "measure": observation.get("measure"),
-                        "period": observation.get("period"),
-                        "period_type": observation.get("period_type"),
-                        "value": observation.get("value"),
-                        "currency": observation.get("currency"),
-                        "unit": unit,
+                        "measure": observation.get(
+                            "measure"
+                        ),
+                        "period": observation.get(
+                            "period"
+                        ),
+                        "period_type": observation.get(
+                            "period_type"
+                        ),
+                        "value": observation.get(
+                            "value"
+                        ),
+                        "currency": observation.get(
+                            "currency"
+                        ),
+                        "unit": observation.get("unit"),
+
+                        # Keep dimensions as a dictionary.
+                        #
+                        # Do NOT convert this to JSON text.
+                        "dimensions": dimensions,
                     }
                 )
+
+    if not rows:
+
+        return pd.DataFrame()
 
     return pd.DataFrame(rows)
 
@@ -100,7 +315,10 @@ def flatten_extractions(response_data):
 # Extract a single file
 # ============================================================
 
-def extract_single_file(uploaded_file, headers):
+def extract_single_file(
+    uploaded_file,
+    headers,
+):
     """
     Send exactly one file in exactly one HTTP request.
     """
@@ -108,6 +326,7 @@ def extract_single_file(uploaded_file, headers):
     filename = uploaded_file.name
 
     try:
+
         file_bytes = uploaded_file.getvalue()
 
         files = {
@@ -118,7 +337,6 @@ def extract_single_file(uploaded_file, headers):
                 or "application/octet-stream",
             )
         }
-
         response = requests.post(
             ENDPOINT,
             headers=headers,
@@ -136,14 +354,18 @@ def extract_single_file(uploaded_file, headers):
         }
 
     except requests.exceptions.Timeout:
+
         return {
             "filename": filename,
             "success": False,
             "response_data": None,
-            "error": "Request timed out after 1 hour.",
+            "error": (
+                "Request timed out after 1 hour."
+            ),
         }
 
     except requests.exceptions.HTTPError as e:
+
         status_code = (
             e.response.status_code
             if e.response is not None
@@ -162,33 +384,124 @@ def extract_single_file(uploaded_file, headers):
             "response_data": None,
             "error": (
                 f"HTTP {status_code}"
-                + (f": {response_text}" if response_text else "")
+                + (
+                    f": {response_text}"
+                    if response_text
+                    else ""
+                )
             ),
         }
 
     except requests.exceptions.RequestException as e:
+
         return {
             "filename": filename,
             "success": False,
             "response_data": None,
-            "error": f"Request failed: {e}",
+            "error": (
+                f"Request failed: {e}"
+            ),
         }
 
     except ValueError:
+
         return {
             "filename": filename,
             "success": False,
             "response_data": None,
-            "error": "The API returned invalid JSON.",
+            "error": (
+                "The API returned invalid JSON."
+            ),
         }
 
     except Exception as e:
+
         return {
             "filename": filename,
             "success": False,
             "response_data": None,
-            "error": f"Unexpected error: {e}",
+            "error": (
+                f"Unexpected error: {e}"
+            ),
         }
+
+
+# ============================================================
+# Build display dataframe for ONE observations list
+# ============================================================
+
+def build_observation_display_df(measure_df):
+    """
+    Build the Streamlit dataframe for ONE measure/observations
+    list.
+
+    The dimension columns are calculated ONLY from this
+    measure_df.
+
+    Therefore dimensions from another KPI/measure will not
+    appear here.
+    """
+
+    display_rows = []
+
+    # --------------------------------------------------------
+    # Find dimension keys ONLY within this observations list
+    # --------------------------------------------------------
+
+    dimension_keys = get_dimension_keys_for_dataframe(
+        measure_df
+    )
+
+    # --------------------------------------------------------
+    # Build rows
+    # --------------------------------------------------------
+
+    for _, row in measure_df.iterrows():
+
+        display_row = {
+            "Period": row.get("period"),
+            "Period Type": row.get("period_type"),
+            "Value": row.get("value"),
+            "Currency": (
+                row.get("currency")
+                if pd.notna(row.get("currency"))
+                else "—"
+            ),
+            "Unit": (
+                row.get("unit")
+                if pd.notna(row.get("unit"))
+                else "—"
+            ),
+        }
+
+        # ----------------------------------------------------
+        # Add only dimensions belonging to THIS observations
+        # list.
+        # ----------------------------------------------------
+
+        dimensions = normalize_dimensions(
+            row.get("dimensions")
+        )
+
+        for dimension_key in dimension_keys:
+
+            value = dimensions.get(
+                dimension_key
+            )
+
+            if value is None:
+
+                display_row[dimension_key] = "—"
+
+            else:
+
+                display_row[dimension_key] = value
+
+        display_rows.append(
+            display_row
+        )
+
+    return pd.DataFrame(display_rows)
 
 
 # ============================================================
@@ -204,11 +517,22 @@ def display_kpi_view(df):
                 -> KPI
                     -> Measure
                         -> Observations
+
+    Each measure/observations list gets its OWN independent
+    set of dimension columns.
     """
 
     if df.empty:
-        st.warning("No KPI observations found.")
+
+        st.warning(
+            "No KPI observations found."
+        )
+
         return
+
+    # ========================================================
+    # Source
+    # ========================================================
 
     for source, source_df in df.groupby(
         "source",
@@ -228,8 +552,16 @@ def display_kpi_view(df):
             expanded=True,
         ):
 
+            # =================================================
+            # Company / holding / page
+            # =================================================
+
             page_groups = source_df.groupby(
-                ["company", "holding", "label"],
+                [
+                    "company",
+                    "holding",
+                    "label",
+                ],
                 sort=False,
                 dropna=False,
             )
@@ -252,14 +584,20 @@ def display_kpi_view(df):
                     else "Unknown"
                 )
 
-                if pd.notna(holding) and holding:
+                if (
+                    pd.notna(holding)
+                    and holding
+                ):
+
                     page_title = (
                         f"📄 Page {page_name} · "
                         f"{company_name} · "
                         f"Holding: {holding} "
                         f"({len(page_df)} observations)"
                     )
+
                 else:
+
                     page_title = (
                         f"📄 Page {page_name} · "
                         f"{company_name} "
@@ -270,6 +608,10 @@ def display_kpi_view(df):
                     page_title,
                     expanded=True,
                 ):
+
+                    # =========================================
+                    # KPI
+                    # =========================================
 
                     for kpi, kpi_df in page_df.groupby(
                         "kpi",
@@ -283,13 +625,19 @@ def display_kpi_view(df):
                             else "Unnamed KPI"
                         )
 
-                        observation_count = len(kpi_df)
+                        observation_count = len(
+                            kpi_df
+                        )
 
                         with st.expander(
                             f"**{kpi_name}** "
                             f"({observation_count} observations)",
                             expanded=True,
                         ):
+
+                            # =================================
+                            # Measure
+                            # =================================
 
                             for measure, measure_df in kpi_df.groupby(
                                 "measure",
@@ -304,34 +652,24 @@ def display_kpi_view(df):
                                 )
 
                                 st.markdown(
-                                    f"**Measure: `{measure_name}`**"
+                                    f"**Measure: "
+                                    f"`{measure_name}`**"
                                 )
 
-                                display_rows = []
+                                # ---------------------------------
+                                # IMPORTANT:
+                                #
+                                # This dataframe contains ONLY
+                                # this particular observations list.
+                                #
+                                # Therefore the dimensions are
+                                # determined independently.
+                                # ---------------------------------
 
-                                for _, row in measure_df.iterrows():
-                                    display_rows.append(
-                                        {
-                                            "Period": row["period"],
-                                            "Period Type": row[
-                                                "period_type"
-                                            ],
-                                            "Value": row["value"],
-                                            "Currency": (
-                                                row["currency"]
-                                                if pd.notna(row["currency"])
-                                                else "—"
-                                            ),
-                                            "Unit": (
-                                                row["unit"]
-                                                if pd.notna(row["unit"])
-                                                else "—"
-                                            ),
-                                        }
+                                observation_df = (
+                                    build_observation_display_df(
+                                        measure_df
                                     )
-
-                                observation_df = pd.DataFrame(
-                                    display_rows
                                 )
 
                                 st.dataframe(
@@ -412,7 +750,10 @@ if uploaded_files:
 
         for uploaded_file in oversized_files:
 
-            size_mb = uploaded_file.size / (1024 * 1024)
+            size_mb = (
+                uploaded_file.size
+                / (1024 * 1024)
+            )
 
             st.error(
                 f"📄 **{uploaded_file.name}** — "
@@ -427,12 +768,16 @@ if uploaded_files:
     # --------------------------------------------------------
 
     st.subheader(
-        f"Selected files ({len(uploaded_files)}/{MAX_FILES})"
+        f"Selected files "
+        f"({len(uploaded_files)}/{MAX_FILES})"
     )
 
     for uploaded_file in uploaded_files:
 
-        size_mb = uploaded_file.size / (1024 * 1024)
+        size_mb = (
+            uploaded_file.size
+            / (1024 * 1024)
+        )
 
         st.write(
             f"📄 **{uploaded_file.name}** "
@@ -457,35 +802,25 @@ if uploaded_files:
         total_files = len(uploaded_files)
 
         progress = st.progress(0)
+
         status_text = st.empty()
 
         results = []
 
         # ====================================================
-        # Submit requests with a 2-second delay between starts
-        #
-        # IMPORTANT:
-        #
-        # Request 1 starts
-        #       ↓
-        # 2 second delay
-        #       ↓
-        # Request 2 starts
-        #       ↓
-        # 2 second delay
-        #       ↓
-        # Request 3 starts
-        #
-        # The previous requests DO NOT need to complete before
-        # the next request starts.
+        # Submit requests with 2-second delay
         # ====================================================
 
         with st.spinner(
-            f"Starting {total_files} extraction requests..."
+            f"Starting {total_files} "
+            f"extraction requests..."
         ):
 
             with ThreadPoolExecutor(
-                max_workers=min(MAX_WORKERS, total_files)
+                max_workers=min(
+                    MAX_WORKERS,
+                    total_files,
+                )
             ) as executor:
 
                 futures = []
@@ -494,9 +829,10 @@ if uploaded_files:
                     uploaded_files
                 ):
 
-                    # Wait 2 seconds BEFORE starting every
-                    # request except the first one.
+                    # Wait before every request except
+                    # the first.
                     if index > 0:
+
                         time.sleep(
                             REQUEST_START_DELAY_SECONDS
                         )
@@ -515,30 +851,33 @@ if uploaded_files:
                     )
 
                     status_text.info(
-                        f"Started {index + 1}/{total_files}: "
+                        f"Started "
+                        f"{index + 1}/{total_files}: "
                         f"{uploaded_file.name}"
                     )
 
-                # =================================================
-                # Collect results as requests complete.
-                #
-                # Completion order can be different from the
-                # upload order.
-                # =================================================
+                # =============================================
+                # Collect results
+                # =============================================
 
                 completed = 0
 
                 for future, filename in futures:
 
                     try:
+
                         result = future.result()
 
                     except Exception as e:
+
                         result = {
                             "filename": filename,
                             "success": False,
                             "response_data": None,
-                            "error": f"Unexpected worker error: {e}",
+                            "error": (
+                                "Unexpected worker error: "
+                                f"{e}"
+                            ),
                         }
 
                     results.append(result)
@@ -550,13 +889,18 @@ if uploaded_files:
                     )
 
                     if result["success"]:
+
                         status_text.success(
-                            f"Completed {completed}/{total_files}: "
+                            f"Completed "
+                            f"{completed}/{total_files}: "
                             f"{filename}"
                         )
+
                     else:
+
                         status_text.error(
-                            f"Failed {completed}/{total_files}: "
+                            f"Failed "
+                            f"{completed}/{total_files}: "
                             f"{filename}"
                         )
 
@@ -565,8 +909,11 @@ if uploaded_files:
         # ====================================================
 
         all_rows = []
+
         all_skipped = []
+
         all_failed_extractions = []
+
         request_failures = []
 
         successful_files = 0
@@ -574,6 +921,10 @@ if uploaded_files:
         for result in results:
 
             filename = result["filename"]
+
+            # ------------------------------------------------
+            # Request failed
+            # ------------------------------------------------
 
             if not result["success"]:
 
@@ -588,14 +939,26 @@ if uploaded_files:
 
             successful_files += 1
 
-            response_data = result["response_data"] or {}
+            response_data = (
+                result["response_data"]
+                or {}
+            )
+
+            # ------------------------------------------------
+            # KPI observations
+            # ------------------------------------------------
 
             file_df = flatten_extractions(
                 response_data
             )
 
             if not file_df.empty:
+
                 all_rows.append(file_df)
+
+            # ------------------------------------------------
+            # Skipped
+            # ------------------------------------------------
 
             skipped = response_data.get(
                 "skipped",
@@ -603,7 +966,14 @@ if uploaded_files:
             )
 
             if skipped:
-                all_skipped.extend(skipped)
+
+                all_skipped.extend(
+                    skipped
+                )
+
+            # ------------------------------------------------
+            # Failed extractions
+            # ------------------------------------------------
 
             failed = response_data.get(
                 "failed_extractions",
@@ -611,7 +981,10 @@ if uploaded_files:
             )
 
             if failed:
-                all_failed_extractions.extend(failed)
+
+                all_failed_extractions.extend(
+                    failed
+                )
 
         # ====================================================
         # Combine KPI observations
@@ -622,6 +995,7 @@ if uploaded_files:
             result_df = pd.concat(
                 all_rows,
                 ignore_index=True,
+                sort=False,
             )
 
         else:
@@ -634,10 +1008,13 @@ if uploaded_files:
 
         if not result_df.empty:
 
-            st.session_state["result_df"] = result_df
+            st.session_state[
+                "result_df"
+            ] = result_df
 
             st.success(
-                f"Completed {successful_files}/{total_files} files — "
+                f"Completed "
+                f"{successful_files}/{total_files} files — "
                 f"{len(result_df)} observations"
             )
 
@@ -651,7 +1028,8 @@ if uploaded_files:
             if successful_files:
 
                 st.warning(
-                    f"Completed {successful_files}/{total_files} files, "
+                    f"Completed "
+                    f"{successful_files}/{total_files} files, "
                     "but no KPI observations were found."
                 )
 
@@ -668,7 +1046,8 @@ if uploaded_files:
         if request_failures:
 
             with st.expander(
-                f"❌ Failed requests ({len(request_failures)})",
+                f"❌ Failed requests "
+                f"({len(request_failures)})",
                 expanded=True,
             ):
 
@@ -686,10 +1065,13 @@ if uploaded_files:
         if all_skipped:
 
             with st.expander(
-                f"⚠️ Skipped items ({len(all_skipped)})"
+                f"⚠️ Skipped items "
+                f"({len(all_skipped)})"
             ):
 
-                st.json(all_skipped)
+                st.json(
+                    all_skipped
+                )
 
         # ====================================================
         # Failed extractions
@@ -702,7 +1084,9 @@ if uploaded_files:
                 f"({len(all_failed_extractions)})"
             ):
 
-                st.json(all_failed_extractions)
+                st.json(
+                    all_failed_extractions
+                )
 
 
 # ============================================================
@@ -711,35 +1095,41 @@ if uploaded_files:
 
 if "result_df" in st.session_state:
 
-    result_df = st.session_state["result_df"]
+    result_df = st.session_state[
+        "result_df"
+    ]
 
     st.divider()
 
-    # --------------------------------------------------------
+    # ========================================================
     # Summary
-    # --------------------------------------------------------
+    # ========================================================
 
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
+
         st.metric(
             "Sources",
             result_df["source"].nunique(),
         )
 
     with col2:
+
         st.metric(
             "Companies",
             result_df["company"].nunique(),
         )
 
     with col3:
+
         st.metric(
             "KPIs",
             result_df["kpi"].nunique(),
         )
 
     with col4:
+
         st.metric(
             "Observations",
             len(result_df),
@@ -753,9 +1143,9 @@ if "result_df" in st.session_state:
 
     st.subheader("Export")
 
-    # --------------------------------------------------------
+    # ========================================================
     # Excel
-    # --------------------------------------------------------
+    # ========================================================
 
     excel_path = "kpi_observations.xlsx"
 
@@ -764,15 +1154,31 @@ if "result_df" in st.session_state:
         engine="openpyxl",
     ) as writer:
 
+        from openpyxl.styles import (
+            Alignment,
+            Font,
+            PatternFill,
+        )
+
+        from openpyxl.utils import (
+            get_column_letter,
+        )
+
         workbook = writer.book
+
+        # ----------------------------------------------------
+        # Create worksheet
+        # ----------------------------------------------------
+
         worksheet = workbook.create_sheet(
             "KPI Observations"
         )
 
-        from openpyxl.styles import Font, PatternFill, Alignment
-        from openpyxl.utils import get_column_letter
-
         current_row = 1
+
+        # ----------------------------------------------------
+        # Source groups
+        # ----------------------------------------------------
 
         source_groups = result_df.groupby(
             "source",
@@ -805,8 +1211,16 @@ if "result_df" in st.session_state:
 
             current_row += 1
 
+            # =================================================
+            # Page groups
+            # =================================================
+
             page_groups = source_df.groupby(
-                ["company", "holding", "label"],
+                [
+                    "company",
+                    "holding",
+                    "label",
+                ],
                 sort=False,
                 dropna=False,
             )
@@ -829,7 +1243,10 @@ if "result_df" in st.session_state:
                     else "Unknown"
                 )
 
-                if pd.notna(holding) and holding:
+                if (
+                    pd.notna(holding)
+                    and holding
+                ):
 
                     page_title = (
                         f"📄 Page {page_name} · "
@@ -862,6 +1279,10 @@ if "result_df" in st.session_state:
 
                 current_row += 1
 
+                # =================================================
+                # KPI groups
+                # =================================================
+
                 for kpi, kpi_df in page_df.groupby(
                     "kpi",
                     sort=False,
@@ -874,7 +1295,9 @@ if "result_df" in st.session_state:
                         else "Unnamed KPI"
                     )
 
-                    observation_count = len(kpi_df)
+                    observation_count = len(
+                        kpi_df
+                    )
 
                     worksheet.cell(
                         current_row,
@@ -893,6 +1316,10 @@ if "result_df" in st.session_state:
 
                     current_row += 1
 
+                    # =================================================
+                    # Measure groups
+                    # =================================================
+
                     for measure, measure_df in kpi_df.groupby(
                         "measure",
                         sort=False,
@@ -908,7 +1335,8 @@ if "result_df" in st.session_state:
                         worksheet.cell(
                             current_row,
                             1,
-                            f"Measure: {measure_name}",
+                            f"Measure: "
+                            f"{measure_name}",
                         )
 
                         worksheet.cell(
@@ -921,6 +1349,23 @@ if "result_df" in st.session_state:
 
                         current_row += 1
 
+                        # =================================================
+                        # IMPORTANT:
+                        #
+                        # Determine dimensions ONLY for this
+                        # particular measure/observations list.
+                        # =================================================
+
+                        dimension_columns = (
+                            get_dimension_keys_for_dataframe(
+                                measure_df
+                            )
+                        )
+
+                        # -------------------------------------------------
+                        # Base headers
+                        # -------------------------------------------------
+
                         headers = [
                             "Period",
                             "Period Type",
@@ -928,6 +1373,19 @@ if "result_df" in st.session_state:
                             "Currency",
                             "Unit",
                         ]
+
+                        # -------------------------------------------------
+                        # Add ONLY this observation list's
+                        # dimension columns.
+                        # -------------------------------------------------
+
+                        headers.extend(
+                            dimension_columns
+                        )
+
+                        # -------------------------------------------------
+                        # Write headers
+                        # -------------------------------------------------
 
                         for col, header in enumerate(
                             headers,
@@ -955,64 +1413,176 @@ if "result_df" in st.session_state:
 
                         current_row += 1
 
+                        # =================================================
+                        # Write observations
+                        # =================================================
+
                         for _, row in measure_df.iterrows():
 
                             values = [
-                                row["period"],
-                                row["period_type"],
-                                row["value"],
+                                row.get(
+                                    "period"
+                                ),
+                                row.get(
+                                    "period_type"
+                                ),
+                                row.get(
+                                    "value"
+                                ),
                                 (
-                                    row["currency"]
-                                    if pd.notna(row["currency"])
+                                    row.get(
+                                        "currency"
+                                    )
+                                    if pd.notna(
+                                        row.get(
+                                            "currency"
+                                        )
+                                    )
                                     else "—"
                                 ),
                                 (
-                                    row["unit"]
-                                    if pd.notna(row["unit"])
+                                    row.get(
+                                        "unit"
+                                    )
+                                    if pd.notna(
+                                        row.get(
+                                            "unit"
+                                        )
+                                    )
                                     else "—"
                                 ),
                             ]
+
+                            # ---------------------------------------------
+                            # Get dimensions for THIS observation.
+                            # ---------------------------------------------
+
+                            dimensions = normalize_dimensions(
+                                row.get(
+                                    "dimensions"
+                                )
+                            )
+
+                            # ---------------------------------------------
+                            # Add dimensions in the exact same order
+                            # as the headers.
+                            # ---------------------------------------------
+
+                            for dimension in dimension_columns:
+
+                                dimension_value = (
+                                    dimensions.get(
+                                        dimension
+                                    )
+                                )
+
+                                if dimension_value is None:
+
+                                    dimension_value = "—"
+
+                                values.append(
+                                    dimension_value
+                                )
+
+                            # ---------------------------------------------
+                            # Write row
+                            # ---------------------------------------------
 
                             for col, value in enumerate(
                                 values,
                                 start=1,
                             ):
 
+                                if pd.isna(value):
+
+                                    value = None
+
                                 worksheet.cell(
                                     current_row,
                                     col,
-                                    None
-                                    if pd.isna(value)
-                                    else value,
+                                    value,
                                 )
 
                             current_row += 1
 
+                        # Blank row after observations.
                         current_row += 1
 
+                    # Blank row after KPI.
                     current_row += 1
 
+                # Blank row after page.
                 current_row += 1
 
+            # Blank row after source.
             current_row += 1
 
+        # ========================================================
+        # Excel formatting
+        # ========================================================
+
+        # Base widths.
         widths = {
-            1: 55,
-            2: 18,
-            3: 18,
-            4: 16,
-            5: 16,
+            1: 18,   # Period
+            2: 18,   # Period Type
+            3: 18,   # Value
+            4: 16,   # Currency
+            5: 16,   # Unit
         }
 
-        for col_idx, width in widths.items():
+        # --------------------------------------------------------
+        # Since different sections can have different dimension
+        # columns, scan the worksheet headers and calculate a
+        # sensible width for every column.
+        # --------------------------------------------------------
+
+        for column_cells in worksheet.iter_cols():
+
+            max_length = 0
+
+            for cell in column_cells:
+
+                if cell.value is not None:
+
+                    value_length = len(
+                        str(cell.value)
+                    )
+
+                    max_length = max(
+                        max_length,
+                        value_length,
+                    )
+
+            column_index = (
+                column_cells[0].column
+            )
+
+            # Keep widths reasonable.
+            width = max(
+                12,
+                min(
+                    45,
+                    max_length + 2,
+                ),
+            )
 
             worksheet.column_dimensions[
-                get_column_letter(col_idx)
+                get_column_letter(
+                    column_index
+                )
             ].width = width
 
         worksheet.freeze_panes = "A1"
 
-    with open(excel_path, "rb") as f:
+    # ========================================================
+    # Download Excel
+    # ========================================================
+
+    with open(
+        excel_path,
+        "rb",
+    ) as f:
+
         excel_data = f.read()
 
     st.download_button(
@@ -1025,10 +1595,12 @@ if "result_df" in st.session_state:
         ),
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # KPI-centric grouped view
-    # --------------------------------------------------------
+    # ========================================================
 
     st.header("KPI Observations")
 
-    display_kpi_view(result_df)
+    display_kpi_view(
+        result_df
+    )
