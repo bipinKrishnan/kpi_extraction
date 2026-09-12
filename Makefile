@@ -1,4 +1,4 @@
-.PHONY: format lint fix check deploy deploy-ocr deploy-gemma deploy-fastapi modal-stop
+.PHONY: format lint fix check deploy deploy-ocr deploy-extract deploy-fastapi modal-stop
 
 format:
 	ruff format .
@@ -17,14 +17,14 @@ check:
 # them. .NOTPARALLEL keeps that order even under `make -j`.
 .NOTPARALLEL:
 
-deploy: deploy-ocr deploy-gemma deploy-fastapi deploy-web-app
+deploy: deploy-ocr deploy-extract deploy-fastapi deploy-web-app
 
-deploy-backend: deploy-ocr deploy-gemma deploy-fastapi
+deploy-backend: deploy-ocr deploy-extract deploy-fastapi
 
 deploy-ocr:
 	uv run modal deploy src/ocr/modal_app.py
 
-deploy-gemma:
+deploy-extract:
 	uv run modal deploy src/extract/modal_app.py
 
 deploy-fastapi:

@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi[standard]>=0.141.1",
     "httpx>=0.28.1",
+    "json-repair>=0.63.4",
     "markitdown-ocr>=0.1.0",
     "modal>=1.5.3",
     "pillow>=12.3.0",

@@ -104,7 +104,7 @@ class Observation(_Strict):
     value: float
     unit: str | None
     currency: str | None
-    dimensions: dict[str, str] | None
+    dimensions: list[str] | None
 
     @field_validator("period")
     @classmethod
