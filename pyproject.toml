@@ -10,6 +10,7 @@ dependencies = [
     "json-repair>=0.63.4",
     "markitdown-ocr>=0.1.0",
     "modal>=1.5.3",
+    "numind==0.4.0",
     "pillow>=12.3.0",
     "pydantic-settings>=2.14.2",
     "pypdfium2>=5.12.1",

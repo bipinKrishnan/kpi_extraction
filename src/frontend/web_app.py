@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -32,280 +33,365 @@ if not MODAL_SECRET:
 
 ENDPOINT = f"{WORKSPACE_URL.rstrip('/')}/extract/text"
 
-ALLOWED_EXTENSIONS = ["pdf", "pptx", "docx"]
+ALLOWED_EXTENSIONS = [
+    "pdf",
+    "pptx",
+    "docx",
+]
 
-# Maximum number of files allowed in one batch.
 MAX_FILES = 20
 
-# Maximum size of each individual file.
 MAX_FILE_SIZE_MB = 50
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
-# Maximum number of requests running concurrently.
 MAX_WORKERS = 5
 
-# Delay between STARTING requests.
 REQUEST_START_DELAY_SECONDS = 2
 
 
 # ============================================================
-# Dimension helpers
+# Tag helpers
 # ============================================================
 
-def normalize_dimensions(dimensions):
+def normalize_tags(dimensions):
     """
-    Normalize an observation's dimensions into a dictionary.
+    Normalize the API dimensions field into a flat list
+    of strings.
 
-    Supported examples:
-
-        None
-            -> {}
-
-        {}
-            -> {}
-
-        {
-            "region": "Europe",
-            "segment": "Retail"
-        }
-            -> same dictionary
-
-        [
-            {"region": "Europe"},
-            {"segment": "Retail"}
-        ]
-            -> {
-                "region": "Europe",
-                "segment": "Retail"
-            }
-
-    If dimensions cannot be interpreted as key-value pairs,
-    an empty dictionary is returned.
+    Supports:
+        - None
+        - list
+        - tuple
+        - dictionary
+        - scalar values
     """
 
     if dimensions is None:
-        return {}
+        return []
 
-    # Normal case:
-    # dimensions is already a dictionary.
-    if isinstance(dimensions, dict):
-        return dimensions
-
-    # Defensive support for a list of dictionaries.
     if isinstance(dimensions, list):
-
-        normalized = {}
-
-        for item in dimensions:
-
-            if isinstance(item, dict):
-                normalized.update(item)
-
-        return normalized
-
-    return {}
-
-
-def get_dimension_keys_for_observations(observations):
-    """
-    Get the dimension keys ONLY for one observations list.
-
-    This is intentionally NOT calculated across the entire
-    dataframe.
-
-    Example:
-
-        observations = [
-            {
-                "dimensions": {
-                    "region": "Europe",
-                    "segment": "Retail"
-                }
-            },
-            {
-                "dimensions": {
-                    "region": "Asia",
-                    "segment": "Wholesale"
-                }
-            }
+        return [
+            str(item)
+            for item in dimensions
+            if item is not None
         ]
 
-    returns:
+    if isinstance(dimensions, tuple):
+        return [
+            str(item)
+            for item in dimensions
+            if item is not None
+        ]
 
-        ["region", "segment"]
+    if isinstance(dimensions, dict):
+        return [
+            str(value)
+            for value in dimensions.values()
+            if value is not None
+        ]
 
-    If another KPI has:
+    return [str(dimensions)]
 
-        {
-            "dimensions": {
-                "scope": "Group"
-            }
-        }
 
-    "scope" will NOT be added to the first observations list.
+def format_tags(tags):
+    """
+    Convert a list of tags into a display-friendly string.
     """
 
-    dimension_keys = []
+    normalized = normalize_tags(tags)
 
-    seen = set()
+    if not normalized:
+        return "—"
 
-    for observation in observations:
-
-        dimensions = normalize_dimensions(
-            observation.get("dimensions")
-        )
-
-        for key in dimensions.keys():
-
-            key = str(key)
-
-            if key not in seen:
-
-                seen.add(key)
-                dimension_keys.append(key)
-
-    return dimension_keys
+    return ", ".join(normalized)
 
 
-def get_dimension_keys_for_dataframe(measure_df):
+# ============================================================
+# Page helper
+# ============================================================
+
+def extract_page_number(label):
     """
-    Get dimension keys for one measure dataframe only.
+    Extract page information from the API extraction label.
 
-    The dataframe is expected to contain a 'dimensions'
-    column where each cell contains a dictionary or None.
+    The API response places page information in:
+        extractions[*]["label"]
 
-    This is used by the Excel export.
+    Examples:
+        "Page 12"
+        "Page: 12"
+        "Page 12 of 80"
+        "page_12"
+        "p. 12"
+        "p12"
+        "page=12"
+        "page-12"
+        "pages 12-13"
 
-    IMPORTANT:
-    This function is called separately for every measure_df,
-    so dimensions remain independent between observation lists.
+    The original label is retained separately as
+    extraction_label for traceability.
     """
 
-    dimension_keys = []
+    if label is None:
+        return None
 
-    seen = set()
+    label_text = str(label).strip()
 
-    if "dimensions" not in measure_df.columns:
-        return dimension_keys
+    # Page range, e.g. "pages 12-13"
+    match = re.search(
+        r"\bpages?\s*[:=_\-]?\s*(\d+(?:\s*[-–]\s*\d+)?)",
+        label_text,
+        flags=re.IGNORECASE,
+    )
 
-    for dimensions in measure_df["dimensions"]:
+    if match:
+        return match.group(1)
 
-        dimensions = normalize_dimensions(
-            dimensions
-        )
+    # p. 12 / p12
+    match = re.search(
+        r"\bp\.?\s*(\d+(?:\s*[-–]\s*\d+)?)\b",
+        label_text,
+        flags=re.IGNORECASE,
+    )
 
-        for key in dimensions.keys():
+    if match:
+        return match.group(1)
 
-            key = str(key)
-
-            if key not in seen:
-
-                seen.add(key)
-                dimension_keys.append(key)
-
-    return dimension_keys
+    return label_text
 
 
 # ============================================================
 # Flatten API response
 # ============================================================
 
-def flatten_extractions(response_data):
+def flatten_extractions(response_data, default_source):
     """
-    Convert the nested extraction response into one row per
-    KPI observation.
+    Convert the backend response structure into one row
+    per KPI observation.
 
-    IMPORTANT:
-
-    Dimensions are deliberately NOT flattened here.
-
-    They are kept as dictionaries so that they can later be
-    expanded independently for each observations/measure list.
-
-    Example:
-
-        dimensions:
-        {
-            "region": "Europe",
-            "segment": "Retail"
-        }
-
-    stays as:
+    Expected structure:
 
         {
-            "region": "Europe",
-            "segment": "Retail"
+            "units": [...],
+            "skipped": [],
+            "extractions": [
+                {
+                    "source": "...",
+                    "label": "...",
+                    "data": {
+                        "document": {
+                            "company": "...",
+                            "holding": "...",
+                            "reporting_period": "...",
+                            "source": "..."
+                        },
+                        "kpis": [
+                            {
+                                "name": "...",
+                                "observations": [
+                                    {
+                                        "measure": "...",
+                                        "period": "...",
+                                        "period_type": "...",
+                                        "value": "...",
+                                        "currency": "...",
+                                        "unit": "...",
+                                        "dimensions": [...]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            ],
+            "failed_extractions": []
         }
 
-    inside the dataframe.
+    Returns one dataframe row per observation.
+
+    Each row contains:
+        - source
+        - source_document
+        - page_number
+        - extraction_source
+        - extraction_label
+        - company
+        - holding
+        - reporting_period
+        - kpi
+        - measure
+        - period
+        - period_type
+        - value
+        - currency
+        - unit
+        - tags
     """
 
     rows = []
 
-    for extraction in response_data.get(
-        "extractions",
-        [],
-    ):
+    if not isinstance(response_data, dict):
+        return pd.DataFrame()
 
-        source = extraction.get("source")
-        label = extraction.get("label")
+    extractions = response_data.get("extractions") or []
+
+    # --------------------------------------------------------
+    # Process every extraction
+    # --------------------------------------------------------
+
+    for extraction in extractions:
+
+        if not isinstance(extraction, dict):
+            continue
+
+        extraction_source = (
+            extraction.get("source")
+            or default_source
+        )
+
+        extraction_label = extraction.get(
+            "label"
+        )
+
+        # Page information comes from extraction label
+        page_number = extract_page_number(
+            extraction_label
+        )
 
         data = extraction.get("data") or {}
 
+        if not isinstance(data, dict):
+            continue
+
+        # ----------------------------------------------------
+        # Document metadata
+        # ----------------------------------------------------
+
         document = data.get("document") or {}
+
+        if not isinstance(document, dict):
+            document = {}
+
+        company = document.get(
+            "company"
+        )
+
+        holding = document.get(
+            "holding"
+        )
+
+        reporting_period = document.get(
+            "reporting_period"
+        )
+
+        document_source = document.get(
+            "source"
+        )
+
+        # Prefer document source when available.
+        source = (
+            document_source
+            or extraction_source
+            or default_source
+        )
+
+        source_document = source
+
+        # ----------------------------------------------------
+        # KPIs are nested inside data
+        # ----------------------------------------------------
 
         kpis = data.get("kpis") or []
 
-        company = document.get("company")
-        holding = document.get("holding")
+        if not isinstance(kpis, list):
+            continue
+
+        # ----------------------------------------------------
+        # Process KPIs
+        # ----------------------------------------------------
 
         for kpi in kpis:
 
-            kpi_name = kpi.get("name")
+            if not isinstance(kpi, dict):
+                continue
+
+            kpi_name = kpi.get(
+                "name"
+            )
 
             observations = kpi.get(
                 "observations"
             ) or []
 
+            if not isinstance(observations, list):
+                continue
+
+            # ------------------------------------------------
+            # Process observations
+            # ------------------------------------------------
+
             for observation in observations:
 
-                dimensions = normalize_dimensions(
-                    observation.get("dimensions")
+                if not isinstance(observation, dict):
+                    continue
+
+                dimensions = observation.get(
+                    "dimensions"
+                )
+
+                tags = normalize_tags(
+                    dimensions
                 )
 
                 rows.append(
                     {
                         "source": source,
+
+                        "source_document": source_document,
+
+                        "page_number": page_number,
+
+                        "extraction_source": extraction_source,
+
+                        "extraction_label": extraction_label,
+
                         "company": company,
+
                         "holding": holding,
-                        "label": label,
+
+                        "reporting_period": reporting_period,
+
                         "kpi": kpi_name,
+
                         "measure": observation.get(
                             "measure"
                         ),
+
                         "period": observation.get(
                             "period"
                         ),
+
                         "period_type": observation.get(
                             "period_type"
                         ),
+
                         "value": observation.get(
                             "value"
                         ),
+
                         "currency": observation.get(
                             "currency"
                         ),
-                        "unit": observation.get("unit"),
 
-                        # Keep dimensions as a dictionary.
-                        #
-                        # Do NOT convert this to JSON text.
-                        "dimensions": dimensions,
+                        "unit": observation.get(
+                            "unit"
+                        ),
+
+                        "tags": tags,
                     }
                 )
 
     if not rows:
-
         return pd.DataFrame()
 
     return pd.DataFrame(rows)
@@ -337,15 +423,20 @@ def extract_single_file(
                 or "application/octet-stream",
             )
         }
+
+        # ====================================================
+        # PRODUCTION API REQUEST
+        # ====================================================
+        
         response = requests.post(
             ENDPOINT,
             headers=headers,
             files=files,
             timeout=3600,
         )
-
+        
         response.raise_for_status()
-
+        
         return {
             "filename": filename,
             "success": True,
@@ -427,81 +518,74 @@ def extract_single_file(
 
 
 # ============================================================
-# Build display dataframe for ONE observations list
+# Build observation display dataframe
 # ============================================================
 
 def build_observation_display_df(measure_df):
     """
-    Build the Streamlit dataframe for ONE measure/observations
-    list.
-
-    The dimension columns are calculated ONLY from this
-    measure_df.
-
-    Therefore dimensions from another KPI/measure will not
-    appear here.
+    Build the Streamlit dataframe for observations.
     """
 
     display_rows = []
 
-    # --------------------------------------------------------
-    # Find dimension keys ONLY within this observations list
-    # --------------------------------------------------------
-
-    dimension_keys = get_dimension_keys_for_dataframe(
-        measure_df
-    )
-
-    # --------------------------------------------------------
-    # Build rows
-    # --------------------------------------------------------
-
     for _, row in measure_df.iterrows():
 
-        display_row = {
-            "Period": row.get("period"),
-            "Period Type": row.get("period_type"),
-            "Value": row.get("value"),
-            "Currency": (
-                row.get("currency")
-                if pd.notna(row.get("currency"))
-                else "—"
-            ),
-            "Unit": (
-                row.get("unit")
-                if pd.notna(row.get("unit"))
-                else "—"
-            ),
-        }
-
-        # ----------------------------------------------------
-        # Add only dimensions belonging to THIS observations
-        # list.
-        # ----------------------------------------------------
-
-        dimensions = normalize_dimensions(
-            row.get("dimensions")
-        )
-
-        for dimension_key in dimension_keys:
-
-            value = dimensions.get(
-                dimension_key
-            )
-
-            if value is None:
-
-                display_row[dimension_key] = "—"
-
-            else:
-
-                display_row[dimension_key] = value
-
         display_rows.append(
-            display_row
+            {
+                "Source Document": (
+                    row.get("source_document")
+                    if pd.notna(
+                        row.get("source_document")
+                    )
+                    else "—"
+                ),
+
+                "Page": (
+                    row.get("page_number")
+                    if pd.notna(
+                        row.get("page_number")
+                    )
+                    and row.get("page_number") is not None
+                    else "—"
+                ),
+
+                "Period": row.get(
+                    "period"
+                ),
+
+                "Period Type": row.get(
+                    "period_type"
+                ),
+
+                "Value": row.get(
+                    "value"
+                ),
+
+                "Currency": (
+                    row.get("currency")
+                    if pd.notna(
+                        row.get("currency")
+                    )
+                    else "—"
+                ),
+
+                "Unit": (
+                    row.get("unit")
+                    if pd.notna(
+                        row.get("unit")
+                    )
+                    else "—"
+                ),
+
+                "Tags": format_tags(
+                    row.get("tags")
+                ),
+            }
         )
 
-    return pd.DataFrame(display_rows)
+    return pd.DataFrame(
+        display_rows
+    )
 
 
 # ============================================================
@@ -510,16 +594,15 @@ def build_observation_display_df(measure_df):
 
 def display_kpi_view(df):
     """
-    Display KPI observations using:
+    Display KPI observations grouped strictly by:
 
         Source document
-            -> Page / label
+            -> Page
                 -> KPI
                     -> Measure
                         -> Observations
 
-    Each measure/observations list gets its OWN independent
-    set of dimension columns.
+    This prevents KPIs from different pages from being mixed.
     """
 
     if df.empty:
@@ -531,14 +614,16 @@ def display_kpi_view(df):
         return
 
     # ========================================================
-    # Source
+    # Source document
     # ========================================================
 
-    for source, source_df in df.groupby(
+    source_groups = df.groupby(
         "source",
         sort=False,
         dropna=False,
-    ):
+    )
+
+    for source, source_df in source_groups:
 
         source_name = (
             str(source)
@@ -552,131 +637,151 @@ def display_kpi_view(df):
             expanded=True,
         ):
 
+            # ------------------------------------------------
+            # Document metadata
+            # ------------------------------------------------
+
+            metadata_row = source_df.iloc[0]
+
+            company = metadata_row.get(
+                "company"
+            )
+
+            holding = metadata_row.get(
+                "holding"
+            )
+
+            reporting_period = metadata_row.get(
+                "reporting_period"
+            )
+
+            metadata_parts = []
+
+            if pd.notna(company) and company:
+
+                metadata_parts.append(
+                    f"**Company:** {company}"
+                )
+
+            if pd.notna(holding) and holding:
+
+                metadata_parts.append(
+                    f"**Holding:** {holding}"
+                )
+
+            if (
+                pd.notna(reporting_period)
+                and reporting_period
+            ):
+
+                metadata_parts.append(
+                    f"**Reporting period:** "
+                    f"{reporting_period}"
+                )
+
+            if metadata_parts:
+
+                st.markdown(
+                    "  \n".join(
+                        metadata_parts
+                    )
+                )
+
+            st.divider()
+
             # =================================================
-            # Company / holding / page
+            # PAGE
             # =================================================
 
             page_groups = source_df.groupby(
-                [
-                    "company",
-                    "holding",
-                    "label",
-                ],
+                "page_number",
                 sort=False,
                 dropna=False,
             )
 
-            for (
-                company,
-                holding,
-                label,
-            ), page_df in page_groups:
-
-                company_name = (
-                    str(company)
-                    if pd.notna(company)
-                    else "Unknown company"
-                )
-
-                page_name = (
-                    str(label)
-                    if pd.notna(label)
-                    else "Unknown"
-                )
+            for page_number, page_df in page_groups:
 
                 if (
-                    pd.notna(holding)
-                    and holding
+                    pd.isna(page_number)
+                    or page_number is None
                 ):
 
-                    page_title = (
-                        f"📄 Page {page_name} · "
-                        f"{company_name} · "
-                        f"Holding: {holding} "
-                        f"({len(page_df)} observations)"
-                    )
+                    page_name = "Page Unknown"
 
                 else:
 
-                    page_title = (
-                        f"📄 Page {page_name} · "
-                        f"{company_name} "
-                        f"({len(page_df)} observations)"
+                    page_name = (
+                        f"Page {page_number}"
                     )
 
-                with st.expander(
-                    page_title,
-                    expanded=True,
-                ):
+                st.subheader(
+                    f"📑 {page_name}"
+                )
 
-                    # =========================================
-                    # KPI
-                    # =========================================
+                # =================================================
+                # KPI
+                # =================================================
 
-                    for kpi, kpi_df in page_df.groupby(
-                        "kpi",
-                        sort=False,
-                        dropna=False,
+                kpi_groups = page_df.groupby(
+                    "kpi",
+                    sort=False,
+                    dropna=False,
+                )
+
+                for kpi, kpi_df in kpi_groups:
+
+                    kpi_name = (
+                        str(kpi)
+                        if pd.notna(kpi)
+                        else "Unnamed KPI"
+                    )
+
+                    observation_count = len(
+                        kpi_df
+                    )
+
+                    with st.expander(
+                        f"**{kpi_name}** "
+                        f"({observation_count} observations)",
+                        expanded=True,
                     ):
 
-                        kpi_name = (
-                            str(kpi)
-                            if pd.notna(kpi)
-                            else "Unnamed KPI"
+                        # =========================================
+                        # Measure
+                        # =========================================
+
+                        measure_groups = kpi_df.groupby(
+                            "measure",
+                            sort=False,
+                            dropna=False,
                         )
 
-                        observation_count = len(
-                            kpi_df
-                        )
+                        for measure, measure_df in measure_groups:
 
-                        with st.expander(
-                            f"**{kpi_name}** "
-                            f"({observation_count} observations)",
-                            expanded=True,
-                        ):
+                            measure_name = (
+                                str(measure)
+                                if pd.notna(measure)
+                                else "Unknown"
+                            )
 
-                            # =================================
-                            # Measure
-                            # =================================
+                            st.markdown(
+                                f"**Measure: "
+                                f"`{measure_name}`**"
+                            )
 
-                            for measure, measure_df in kpi_df.groupby(
-                                "measure",
-                                sort=False,
-                                dropna=False,
-                            ):
-
-                                measure_name = (
-                                    str(measure)
-                                    if pd.notna(measure)
-                                    else "Unknown"
+                            observation_df = (
+                                build_observation_display_df(
+                                    measure_df
                                 )
+                            )
 
-                                st.markdown(
-                                    f"**Measure: "
-                                    f"`{measure_name}`**"
-                                )
+                            st.dataframe(
+                                observation_df,
+                                use_container_width=True,
+                                hide_index=True,
+                            )
 
-                                # ---------------------------------
-                                # IMPORTANT:
-                                #
-                                # This dataframe contains ONLY
-                                # this particular observations list.
-                                #
-                                # Therefore the dimensions are
-                                # determined independently.
-                                # ---------------------------------
-
-                                observation_df = (
-                                    build_observation_display_df(
-                                        measure_df
-                                    )
-                                )
-
-                                st.dataframe(
-                                    observation_df,
-                                    use_container_width=True,
-                                    hide_index=True,
-                                )
+                st.divider()
 
 
 # ============================================================
@@ -689,7 +794,9 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("📊 VeroPort Extract")
+st.title(
+    "📊 VeroPort Extract"
+)
 
 st.write(
     "Upload financial documents and extract KPI observations. "
@@ -799,16 +906,20 @@ if uploaded_files:
             "Modal-Secret": MODAL_SECRET,
         }
 
-        total_files = len(uploaded_files)
+        total_files = len(
+            uploaded_files
+        )
 
-        progress = st.progress(0)
+        progress = st.progress(
+            0
+        )
 
         status_text = st.empty()
 
         results = []
 
         # ====================================================
-        # Submit requests with 2-second delay
+        # Submit requests with delay
         # ====================================================
 
         with st.spinner(
@@ -829,8 +940,6 @@ if uploaded_files:
                     uploaded_files
                 ):
 
-                    # Wait before every request except
-                    # the first.
                     if index > 0:
 
                         time.sleep(
@@ -880,7 +989,9 @@ if uploaded_files:
                             ),
                         }
 
-                    results.append(result)
+                    results.append(
+                        result
+                    )
 
                     completed += 1
 
@@ -918,20 +1029,28 @@ if uploaded_files:
 
         successful_files = 0
 
+        total_extractions = 0
+
         for result in results:
 
-            filename = result["filename"]
+            filename = result[
+                "filename"
+            ]
 
             # ------------------------------------------------
             # Request failed
             # ------------------------------------------------
 
-            if not result["success"]:
+            if not result[
+                "success"
+            ]:
 
                 request_failures.append(
                     {
                         "file": filename,
-                        "error": result["error"],
+                        "error": result[
+                            "error"
+                        ],
                     }
                 )
 
@@ -940,8 +1059,42 @@ if uploaded_files:
             successful_files += 1
 
             response_data = (
-                result["response_data"]
+                result[
+                    "response_data"
+                ]
                 or {}
+            )
+
+            # ------------------------------------------------
+            # Validate response structure
+            # ------------------------------------------------
+
+            if not isinstance(
+                response_data,
+                dict,
+            ):
+
+                all_failed_extractions.append(
+                    {
+                        "source": filename,
+                        "error": (
+                            "API response was not a JSON object."
+                        ),
+                    }
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # Count extractions
+            # ------------------------------------------------
+
+            extractions = response_data.get(
+                "extractions"
+            ) or []
+
+            total_extractions += len(
+                extractions
             )
 
             # ------------------------------------------------
@@ -949,12 +1102,15 @@ if uploaded_files:
             # ------------------------------------------------
 
             file_df = flatten_extractions(
-                response_data
+                response_data,
+                default_source=filename,
             )
 
             if not file_df.empty:
 
-                all_rows.append(file_df)
+                all_rows.append(
+                    file_df
+                )
 
             # ------------------------------------------------
             # Skipped
@@ -967,9 +1123,20 @@ if uploaded_files:
 
             if skipped:
 
-                all_skipped.extend(
-                    skipped
-                )
+                if isinstance(
+                    skipped,
+                    list,
+                ):
+
+                    all_skipped.extend(
+                        skipped
+                    )
+
+                else:
+
+                    all_skipped.append(
+                        skipped
+                    )
 
             # ------------------------------------------------
             # Failed extractions
@@ -982,9 +1149,20 @@ if uploaded_files:
 
             if failed:
 
-                all_failed_extractions.extend(
-                    failed
-                )
+                if isinstance(
+                    failed,
+                    list,
+                ):
+
+                    all_failed_extractions.extend(
+                        failed
+                    )
+
+                else:
+
+                    all_failed_extractions.append(
+                        failed
+                    )
 
         # ====================================================
         # Combine KPI observations
@@ -1032,6 +1210,25 @@ if uploaded_files:
                     f"{successful_files}/{total_files} files, "
                     "but no KPI observations were found."
                 )
+
+                # --------------------------------------------
+                # Show useful diagnostic information
+                # --------------------------------------------
+
+                if total_extractions == 0:
+
+                    st.info(
+                        "The API returned no items in "
+                        "`extractions`."
+                    )
+
+                else:
+
+                    st.info(
+                        f"The API returned "
+                        f"{total_extractions} extraction(s), "
+                        "but they contained no KPI observations."
+                    )
 
             else:
 
@@ -1105,30 +1302,29 @@ if "result_df" in st.session_state:
     # Summary
     # ========================================================
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(
+        3
+    )
 
     with col1:
 
         st.metric(
             "Sources",
-            result_df["source"].nunique(),
+            result_df[
+                "source"
+            ].nunique(),
         )
 
     with col2:
 
         st.metric(
-            "Companies",
-            result_df["company"].nunique(),
+            "KPIs",
+            result_df[
+                "kpi"
+            ].nunique(),
         )
 
     with col3:
-
-        st.metric(
-            "KPIs",
-            result_df["kpi"].nunique(),
-        )
-
-    with col4:
 
         st.metric(
             "Observations",
@@ -1141,13 +1337,17 @@ if "result_df" in st.session_state:
 
     st.divider()
 
-    st.subheader("Export")
+    st.subheader(
+        "Export"
+    )
 
     # ========================================================
     # Excel
     # ========================================================
 
-    excel_path = "kpi_observations.xlsx"
+    excel_path = (
+        "kpi_observations.xlsx"
+    )
 
     with pd.ExcelWriter(
         excel_path,
@@ -1176,9 +1376,9 @@ if "result_df" in st.session_state:
 
         current_row = 1
 
-        # ----------------------------------------------------
+        # ====================================================
         # Source groups
-        # ----------------------------------------------------
+        # ====================================================
 
         source_groups = result_df.groupby(
             "source",
@@ -1193,6 +1393,10 @@ if "result_df" in st.session_state:
                 if pd.notna(source)
                 else "Unknown source"
             )
+
+            # ------------------------------------------------
+            # Source heading
+            # ------------------------------------------------
 
             worksheet.cell(
                 current_row,
@@ -1211,62 +1415,92 @@ if "result_df" in st.session_state:
 
             current_row += 1
 
+            # ------------------------------------------------
+            # Document metadata
+            # ------------------------------------------------
+
+            metadata_row = source_df.iloc[0]
+
+            metadata = [
+                (
+                    "Company",
+                    metadata_row.get(
+                        "company"
+                    ),
+                ),
+                (
+                    "Holding",
+                    metadata_row.get(
+                        "holding"
+                    ),
+                ),
+                (
+                    "Reporting Period",
+                    metadata_row.get(
+                        "reporting_period"
+                    ),
+                ),
+            ]
+
+            for label, value in metadata:
+
+                if (
+                    value is not None
+                    and pd.notna(value)
+                    and str(value).strip()
+                ):
+
+                    worksheet.cell(
+                        current_row,
+                        1,
+                        label,
+                    ).font = Font(
+                        bold=True
+                    )
+
+                    worksheet.cell(
+                        current_row,
+                        2,
+                        value,
+                    )
+
+                    current_row += 1
+
+            current_row += 1
+
             # =================================================
-            # Page groups
+            # PAGE GROUPS
             # =================================================
 
             page_groups = source_df.groupby(
-                [
-                    "company",
-                    "holding",
-                    "label",
-                ],
+                "page_number",
                 sort=False,
                 dropna=False,
             )
 
-            for (
-                company,
-                holding,
-                label,
-            ), page_df in page_groups:
-
-                company_name = (
-                    str(company)
-                    if pd.notna(company)
-                    else "Unknown company"
-                )
-
-                page_name = (
-                    str(label)
-                    if pd.notna(label)
-                    else "Unknown"
-                )
+            for page_number, page_df in page_groups:
 
                 if (
-                    pd.notna(holding)
-                    and holding
+                    pd.isna(page_number)
+                    or page_number is None
                 ):
 
-                    page_title = (
-                        f"📄 Page {page_name} · "
-                        f"{company_name} · "
-                        f"Holding: {holding} "
-                        f"({len(page_df)} observations)"
-                    )
+                    page_name = "Page Unknown"
 
                 else:
 
-                    page_title = (
-                        f"📄 Page {page_name} · "
-                        f"{company_name} "
-                        f"({len(page_df)} observations)"
+                    page_name = (
+                        f"Page {page_number}"
                     )
+
+                # ------------------------------------------------
+                # Page heading
+                # ------------------------------------------------
 
                 worksheet.cell(
                     current_row,
                     1,
-                    page_title,
+                    f"📑 {page_name}",
                 )
 
                 worksheet.cell(
@@ -1283,11 +1517,13 @@ if "result_df" in st.session_state:
                 # KPI groups
                 # =================================================
 
-                for kpi, kpi_df in page_df.groupby(
+                kpi_groups = page_df.groupby(
                     "kpi",
                     sort=False,
                     dropna=False,
-                ):
+                )
+
+                for kpi, kpi_df in kpi_groups:
 
                     kpi_name = (
                         str(kpi)
@@ -1298,6 +1534,10 @@ if "result_df" in st.session_state:
                     observation_count = len(
                         kpi_df
                     )
+
+                    # ------------------------------------------------
+                    # KPI heading
+                    # ------------------------------------------------
 
                     worksheet.cell(
                         current_row,
@@ -1320,11 +1560,13 @@ if "result_df" in st.session_state:
                     # Measure groups
                     # =================================================
 
-                    for measure, measure_df in kpi_df.groupby(
+                    measure_groups = kpi_df.groupby(
                         "measure",
                         sort=False,
                         dropna=False,
-                    ):
+                    )
+
+                    for measure, measure_df in measure_groups:
 
                         measure_name = (
                             str(measure)
@@ -1332,11 +1574,14 @@ if "result_df" in st.session_state:
                             else "Unknown"
                         )
 
+                        # ------------------------------------------------
+                        # Measure heading
+                        # ------------------------------------------------
+
                         worksheet.cell(
                             current_row,
                             1,
-                            f"Measure: "
-                            f"{measure_name}",
+                            f"Measure: {measure_name}",
                         )
 
                         worksheet.cell(
@@ -1349,39 +1594,16 @@ if "result_df" in st.session_state:
 
                         current_row += 1
 
-                        # =================================================
-                        # IMPORTANT:
-                        #
-                        # Determine dimensions ONLY for this
-                        # particular measure/observations list.
-                        # =================================================
-
-                        dimension_columns = (
-                            get_dimension_keys_for_dataframe(
-                                measure_df
-                            )
-                        )
-
-                        # -------------------------------------------------
-                        # Base headers
-                        # -------------------------------------------------
-
                         headers = [
+                            "Source Document",
+                            "Page",
                             "Period",
                             "Period Type",
                             "Value",
                             "Currency",
                             "Unit",
+                            "Tags",
                         ]
-
-                        # -------------------------------------------------
-                        # Add ONLY this observation list's
-                        # dimension columns.
-                        # -------------------------------------------------
-
-                        headers.extend(
-                            dimension_columns
-                        )
 
                         # -------------------------------------------------
                         # Write headers
@@ -1419,83 +1641,97 @@ if "result_df" in st.session_state:
 
                         for _, row in measure_df.iterrows():
 
+                            tags_value = format_tags(
+                                row.get("tags")
+                            )
+
+                            currency = row.get(
+                                "currency"
+                            )
+
+                            unit = row.get(
+                                "unit"
+                            )
+
+                            source_document = row.get(
+                                "source_document"
+                            )
+
+                            page_number = row.get(
+                                "page_number"
+                            )
+
                             values = [
+                                (
+                                    source_document
+                                    if pd.notna(
+                                        source_document
+                                    )
+                                    and source_document is not None
+                                    else "—"
+                                ),
+
+                                (
+                                    page_number
+                                    if pd.notna(
+                                        page_number
+                                    )
+                                    and page_number is not None
+                                    else "—"
+                                ),
+
                                 row.get(
                                     "period"
                                 ),
+
                                 row.get(
                                     "period_type"
                                 ),
+
                                 row.get(
                                     "value"
                                 ),
+
                                 (
-                                    row.get(
-                                        "currency"
-                                    )
+                                    currency
                                     if pd.notna(
-                                        row.get(
-                                            "currency"
-                                        )
+                                        currency
                                     )
                                     else "—"
                                 ),
+
                                 (
-                                    row.get(
-                                        "unit"
-                                    )
+                                    unit
                                     if pd.notna(
-                                        row.get(
-                                            "unit"
-                                        )
+                                        unit
                                     )
                                     else "—"
                                 ),
+
+                                tags_value,
                             ]
-
-                            # ---------------------------------------------
-                            # Get dimensions for THIS observation.
-                            # ---------------------------------------------
-
-                            dimensions = normalize_dimensions(
-                                row.get(
-                                    "dimensions"
-                                )
-                            )
-
-                            # ---------------------------------------------
-                            # Add dimensions in the exact same order
-                            # as the headers.
-                            # ---------------------------------------------
-
-                            for dimension in dimension_columns:
-
-                                dimension_value = (
-                                    dimensions.get(
-                                        dimension
-                                    )
-                                )
-
-                                if dimension_value is None:
-
-                                    dimension_value = "—"
-
-                                values.append(
-                                    dimension_value
-                                )
-
-                            # ---------------------------------------------
-                            # Write row
-                            # ---------------------------------------------
 
                             for col, value in enumerate(
                                 values,
                                 start=1,
                             ):
 
-                                if pd.isna(value):
+                                if value is not None:
 
-                                    value = None
+                                    try:
+
+                                        if pd.isna(
+                                            value
+                                        ):
+
+                                            value = None
+
+                                    except (
+                                        TypeError,
+                                        ValueError,
+                                    ):
+
+                                        pass
 
                                 worksheet.cell(
                                     current_row,
@@ -1505,36 +1741,17 @@ if "result_df" in st.session_state:
 
                             current_row += 1
 
-                        # Blank row after observations.
                         current_row += 1
 
-                    # Blank row after KPI.
                     current_row += 1
 
-                # Blank row after page.
                 current_row += 1
 
-            # Blank row after source.
             current_row += 1
 
         # ========================================================
         # Excel formatting
         # ========================================================
-
-        # Base widths.
-        widths = {
-            1: 18,   # Period
-            2: 18,   # Period Type
-            3: 18,   # Value
-            4: 16,   # Currency
-            5: 16,   # Unit
-        }
-
-        # --------------------------------------------------------
-        # Since different sections can have different dimension
-        # columns, scan the worksheet headers and calculate a
-        # sensible width for every column.
-        # --------------------------------------------------------
 
         for column_cells in worksheet.iter_cols():
 
@@ -1545,7 +1762,9 @@ if "result_df" in st.session_state:
                 if cell.value is not None:
 
                     value_length = len(
-                        str(cell.value)
+                        str(
+                            cell.value
+                        )
                     )
 
                     max_length = max(
@@ -1557,11 +1776,10 @@ if "result_df" in st.session_state:
                 column_cells[0].column
             )
 
-            # Keep widths reasonable.
             width = max(
                 12,
                 min(
-                    45,
+                    60,
                     max_length + 2,
                 ),
             )
@@ -1571,6 +1789,10 @@ if "result_df" in st.session_state:
                     column_index
                 )
             ].width = width
+
+        worksheet.column_dimensions[
+            "H"
+        ].width = 45
 
         worksheet.freeze_panes = "A1"
 
@@ -1586,9 +1808,13 @@ if "result_df" in st.session_state:
         excel_data = f.read()
 
     st.download_button(
-        label="⬇️ Download observations Excel",
+        label=(
+            "⬇️ Download observations Excel"
+        ),
         data=excel_data,
-        file_name="kpi_observations.xlsx",
+        file_name=(
+            "kpi_observations.xlsx"
+        ),
         mime=(
             "application/vnd.openxmlformats-"
             "officedocument.spreadsheetml.sheet"
@@ -1599,7 +1825,15 @@ if "result_df" in st.session_state:
     # KPI-centric grouped view
     # ========================================================
 
-    st.header("KPI Observations")
+    st.header(
+        "KPI Observations"
+    )
+
+    st.caption(
+        "Observations are grouped by source document, "
+        "then page, KPI, and measure. Each observation "
+        "includes its source document and page number."
+    )
 
     display_kpi_view(
         result_df

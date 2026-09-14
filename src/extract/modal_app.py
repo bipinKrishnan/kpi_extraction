@@ -84,7 +84,7 @@ GPU_MEMORY_UTILIZATION = 0.90
 
 # The model supports a much larger context, but extraction requests normally
 # do not need 131k tokens. Increase this if your documents require it.
-MAX_MODEL_LEN = 40480
+MAX_MODEL_LEN = 256000
 
 # One image is the intended workload for this service. Keep concurrency modest
 # initially because image tokenization/vision memory is request-dependent.
@@ -118,6 +118,7 @@ SCALEDOWN_WINDOW = 5 * MINUTES
 BUFFER_CONTAINERS = 0
 
 STARTUP_TIMEOUT = 15 * MINUTES
+TASK_TIMEOUT = 5 * MINUTES
 WAKE_TIMEOUT = 2 * MINUTES
 
 # ---------------------------------------------------------------------------
@@ -314,6 +315,8 @@ def _autoscaling_kwargs() -> dict:
 @app.cls(
     image=vllm_image,
     gpu=f"{GPU_TYPE}:{N_GPU}",
+    startup_timeout=STARTUP_TIMEOUT,
+    timeout=TASK_TIMEOUT,
     volumes={
         "/root/.cache/huggingface": hf_cache_vol,
         "/root/.cache/vllm": vllm_cache_vol,

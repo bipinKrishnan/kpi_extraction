@@ -12,3 +12,7 @@ wheels/
 # Environment variables
 .env
 .modal.toml
+
+# local
+utils/
+src/frontend/response.json

@@ -9,7 +9,7 @@ class ExtractedUnit(BaseModel):
     source: str
     extension: str
     label: str
-    content: str
+    content: str| None = None
 
 
 class UnitExtraction(BaseModel):

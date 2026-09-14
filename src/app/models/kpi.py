@@ -56,12 +56,16 @@ _MEASURE_SYNONYMS = {
 }
 
 _PERIOD_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+# for FY, model generates only year
+_YEAR_PATTERN = re.compile(r"^\d{4}$")
 
 
 def _validated_period(value: str | None) -> str | None:
     """Return `value` if it is a "YYYY-MM" month, else raise."""
-    if value is not None and not _PERIOD_PATTERN.match(value):
-        raise ValueError(f"expected a YYYY-MM period, got {value!r}")
+    if value is not None and not (
+        _PERIOD_PATTERN.match(value) or _YEAR_PATTERN.match(value)
+    ):
+        raise ValueError(f"`period` expects YYYY-MM or YYYY, got {value!r}")
 
     return value
 
@@ -101,7 +105,7 @@ class Observation(_Strict):
     period: str
     period_type: PeriodType
     measure: Measure
-    value: float
+    value: float | None
     unit: str | None
     currency: str | None
     dimensions: list[str] | None
@@ -134,12 +138,7 @@ class Kpi(_Strict):
 
 
 class KpiPageExtraction(_Strict):
-    """What the model returns for one unit: figures only.
-
-    No document metadata, because none of it comes from the model any more.
-    `kpis` is empty for most pages, which is the expected answer rather than a
-    failure.
-    """
+    """What the model returns for one unit: list of KPIs."""
 
     kpis: list[Kpi]
 
