@@ -20,6 +20,10 @@ import re
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
+
 # Open vocabularies, deliberately typed as plain `str` rather than `Literal`.
 # The schema is what vLLM's guided decoding enforces, so a `Literal` here would
 # make the listed values the only ones the model can physically emit -- reports
@@ -135,6 +139,29 @@ class Kpi(_Strict):
 
     name: str
     observations: list[Observation]
+
+    @field_validator("observations", mode="before")
+    @classmethod
+    def _flatten_observations(cls, value):
+        if not isinstance(value, list):
+            return value
+
+        result = []
+
+        def flatten(items):
+            logger.info("Flattening %d observations", len(items))
+            for item in items:
+                if (
+                    isinstance(item, dict)
+                    and "observations" in item
+                    and "period" not in item
+                ):
+                    flatten(item["observations"])
+                else:
+                    result.append(item)
+
+        flatten(value)
+        return result
 
 
 class KpiPageExtraction(_Strict):
