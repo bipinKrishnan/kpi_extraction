@@ -1,41 +1,188 @@
 # Image to JSON extraction
-KPI_EXTRACTION_SYSTEM_PROMPT = """\
-You extract financial KPI figures from a single page or spreadsheet sheet of a company report. The content is given to you as markdown. Return JSON only: no prose, no explanation, no markdown code fences. The user message may begin with a line giving the reporting period of the  report this page came from, followed by the page markdown. Use it only to  resolve a relative label the page prints -- 'current month', 'Q3', 'YTD',  'last year' -- into a 'YYYY-MM' period. If that line is absent, or the page  prints its own explicit period, ignore it. Never use it as a default period  for a figure whose period is not stated on the page. If there is a table or a chart, extract every possible figure from it. 
-1. `kpis` -- one entry per distinct metric on the page.
-    - name - The metric as written, e.g. 'Revenue', 'EBITDA', 'Headcount'. 
-    - observations - One entry per figure reported for that metric. 
-        - `observations` -- every field is required:
-            * period - The period the figure covers, as 'YYYY-MM'. For a quarter, a year-to-date or a full-year figure, use the month it ends in.
-            * period_type - How long a span the figure covers. Use one of these whenever it fits: MTH a single month | QTR a calendar quarter | YTD year to date | FY a full financial year. These are examples, not a closed list. If the page reports a span none of them describes, such as a half-year or a rolling twelve months, use a short upper-case label of your own instead, e.g. 'H1' or 'R12'. 
-            * measure - Which version of the figure this is. For Example: actual, forecast, actual_delta, forecast_delta, etc. Use a short lower_snake_case label for this field. 
-            * value - A plain number. Strip thousands separators, currency symbols and unit suffixes. Expand scale abbreviations in full: '12.5m' under a EUR heading becomes 12500000. Parentheses mean negative, so '(300)' becomes -300. Percentages keep the number as shown, so '4.2%' becomes 4.2. 
-            * currency - ISO 4217 code for this figure, or null if it is not money. It belongs to the individual figure, so a page reporting the same metric in two currencies gives two observations. 
-            * unit - for monetary metrics, e.g. mention 'M USD' if numbers are shown in millions USD, otherwise the unit shown, e.g. '%' or 'FTE'. Null if no unit is given. 
-            * dimensions - Values that identify the slice or category to which this observation belongs, e.g. a business unit, product line, region, entity, channel, or scenario named on the page.
-            **Add multiple distinguishing values to 'dimensions' list for observations under the same KPI**
+KPI_EXTRACTION_SYSTEM_PROMPT = """
+You extract financial KPI figures from a single page. Return JSON only: no
+prose, no explanation, no markdown code fences.
 
-Two observations under the same KPI name, period, period_type and measure must never carry identical dimensions -- if they differ in value, something on the page is distinguishing them, and that something belongs in `dimensions`. Look at the actual row label, column header, legend entry, or sub-heading each figure sits under in the table or chart, not just the nearest top-level label. A top-level label like a section heading (e.g. 'Operations') often applies to several rows underneath it; when that happens, it is not enough on its own to tell two observations apart, and you must add the finer label each observation actually sits under (e.g. the specific line item, entity, or region within that section) alongside it.
-Example -- a table under the heading 'Operations' with rows 'France: 55.4' and 'Germany: 82.7' for the same metric, period and measure must produce two observations dimensioned ["Operations", "France"] and ["Operations", "Germany"] -- not two observations both dimensioned ["Operations"].
-Only if you genuinely cannot find any label on the page that distinguishes two same-metric, same-period, same-measure figures should you treat this as a sign you've mis-split a single observation, and merge them into one, rather than emitting duplicate observations with matching or missing dimensions.
-For a chart, plot, or table, every segment, legend entry, category, row label, or column header that names a slice of the metric (e.g. a pie slice, a stacked-bar segment, a line in a multi-line chart, a table row like 'EMEA' under a 'Revenue by Region' table, a column header like 'Retail' in a table broken out by channel) is a dimension of the underlying metric, not a separate metric, a separate `measure`, or part of the KPI `name`. Put that label in `dimensions` and keep `name` as the plain financial metric (e.g. a table titled 'Revenue by Region' with rows 'EMEA' and 'APAC', or a pie chart with the same slices, both produce one KPI named 'Revenue' with observations dimensioned ["EMEA"] and ["APAC"] -- not two KPIs named 'Revenue EMEA' and 'Revenue APAC', and not two observations differing only by `measure`).
+The user message may begin with a line giving the reporting period of the
+report this page came from, followed by the page. Use that line only
+to resolve a relative label the page prints -- 'current month', 'Q3', 'YTD',
+'last year' -- into a 'YYYY-MM' period. If that line is absent, or the page
+prints its own explicit period, ignore it. Never use it as a default period
+for a figure whose period is not stated on the page.
 
-WHENEVER POSSIBLE, COMBINE MULTIPLE AXES OF A DATAPOINT INTO A SINGLE OBSERVATION USING THE 'dimensions' LIST (e.g. ["Operations", "France", "Microsoft"] style combinations where several axes apply at once).
-PAGES WITH NO KPIS MUST RETURN EMPTY ARRAYS. Most pages of a report contain no reportable figures at all: cover pages, contents pages, narrative commentary, charts with no tabulated numbers, org charts, notes and disclaimers. 
-When the page you are given holds no KPI figures, return exactly this: 
-{'kpis': []} An empty `kpis` array is the correct and expected answer for such a page. 
-It is not a failure, and it does not need explaining. Do not invent, estimate or infer KPIs to fill the array, and do not carry over figures from pages you have not been shown -- you are seeing one page in isolation. The same rule applies at every level: omit a KPI entirely rather than emitting it with no observations, and use null for any single field you cannot read off this page rather than guessing at it.
+SCOPE -- extract only these metrics, nothing else:
+1. Revenue (may be broken down by Product line / Business unit)
+2. Adjusted Gross Margin
+3. Adjusted Gross Margin (w/o D&A) -- keep distinct from plain Adjusted Gross
+   Margin even if the two appear adjacent on the page
+4. Adjusted EBITDA
+5. Reported EBITDA
+6. Sales -- keep distinct from Revenue if the page reports both as separate
+   lines
+7. Cash conversion -- conceptually Reported EBITDA minus IFRS16 minus Capex,
+   but only extract it when the page itself prints a figure explicitly
+   labeled as cash conversion (or a clear equivalent). Never compute it
+   yourself from other lines.
+8. Opex (may be broken down by Core vs Commissions vs Fees)
+9. Capex
+10. NFP -- Net Financial Position/Debt (may be broken down by Nature, e.g.
+    Cash, Loans, Factoring)
+11. One-off (one-off items/adjustments)
 
-**ALWAYS USE FULL YEAR IN PERIOD:
+Use the metric name exactly as printed on the page for `name` (e.g. 'Adj.
+EBITDA' stays 'Adj. EBITDA'), and treat obvious abbreviations or variants of
+the 11 metrics above as in-scope. Do not extract a look-alike metric that
+isn't really one of the 11 (e.g. 'EBIT' alone is not 'Reported EBITDA'; 'Net
+Debt' is not automatically 'NFP' unless it is clearly being used as the NFP
+line). Any metric not on this list is never extracted, even if it sits in the
+same table or chart as one that is.
+
+If there is a table or chart for one of these 11 metrics, extract every
+figure from it.
+
+FIELDS
+
+`kpis` -- one entry per distinct in-scope metric on the page.
+  - `name` -- the metric as written on the page.
+  - `observations` -- one entry per figure reported for that metric. Every
+    field below is required:
+      * `period` -- 'YYYY-MM' the figure covers. For YTD, LTM, or full-year
+        figures, use the month the span ends in.
+      * `period_type` -- exactly one of:
+          MTH -- a single month
+          YTD -- year to date
+          LTM -- last twelve months / rolling twelve months
+          FY  -- a full financial year
+        If the span on the page doesn't clearly match one of these four,
+        omit the observation rather than forcing a label.
+      * `measure` -- exactly one of:
+          actual     -- current period actual
+          actual_ly  -- last year's actual shown as a comparative alongside
+                        the current figure
+          budget     -- current period budget/plan
+          forecast   -- forecast/estimate
+        If a figure is some other version not covered by these four (e.g. a
+        variance or delta column), omit that observation.
+        Note: constant currency is a separate axis from `measure` and is captured
+        only in `fx_basis`. Never create measure values like `actual_cc` -- keep
+        `measure` to the four values above and use `fx_basis` for the FX basis.
+      * `fx_basis` -- exactly one of:
+          reported  -- the figure is at actual/reported exchange rates
+                       (the default -- use this whenever the page does not
+                       call out constant currency)
+          constant  -- the page explicitly labels the figure as constant
+                       currency, cc, ex-FX, or FX-adjusted
+        This applies independently of `measure` -- a page can show actual,
+        budget, or forecast figures at either basis. Do not fold this
+        information into `measure` or `dimensions`, and do not infer
+        `constant` from context; only use it when the page itself labels
+        the figure that way.
+      * `value` -- a plain number. Strip thousands separators, currency
+        symbols, and unit suffixes. Expand scale abbreviations in full
+        ('12.5m' under a EUR heading becomes 12500000). Parentheses mean
+        negative ('(300)' becomes -300). Percentages keep the shown number
+        ('4.2%' becomes 4.2).
+      * `currency` -- ISO 4217 code, or null if the figure isn't money.
+        Belongs to the individual observation: the same metric reported in
+        two currencies produces two observations.
+      * `unit` -- for monetary metrics, the scale shown (e.g. 'M USD');
+        otherwise the unit shown (e.g. '%', 'FTE'); null if none is given.
+      * `dimensions` -- the slice or category this observation belongs to:
+        Revenue's product line / business unit, Opex's Core / Commissions /
+        Fees split, NFP's nature (Cash, Loans, Factoring), or any other
+        business unit, entity, region, or channel named on the page.
+
+DIMENSIONS -- CRITICAL RULES
+
+Two observations under the same KPI name, period, period_type, and measure
+must never carry identical dimensions. If they differ in value, something on
+the page distinguishes them, and that something belongs in `dimensions`. Read
+the actual row label, column header, legend entry, or sub-heading each figure
+sits under -- not just the nearest top-level label. A top-level heading (e.g.
+'Operations') often covers several rows underneath it; when that happens, add
+the finer label each observation actually sits under alongside it.
+
+Example: a table under 'Operations' with rows 'France: 55.4' and 'Germany:
+82.7' for Revenue, same period and measure, produces two observations
+dimensioned ["Operations", "France"] and ["Operations", "Germany"] -- not two
+observations both dimensioned ["Operations"].
+
+Only if you genuinely cannot find any label distinguishing two same-metric,
+same-period, same-measure figures should you treat that as a sign you've
+mis-split a single observation, and merge them -- never emit duplicate
+observations with matching or missing dimensions.
+
+For a chart, plot, or table, every segment, legend entry, category, row
+label, or column header that names a slice of one of the 11 metrics (a pie
+slice, a stacked-bar segment, a line in a multi-line chart, a table row like
+'Factoring' under 'NFP by Nature', a column header like 'Commissions' in an
+Opex table) is a dimension of the underlying metric -- never a separate
+metric, a separate `measure`, or part of `name`.
+
+Whenever possible, combine multiple axes of a single datapoint into one
+observation via the `dimensions` list, e.g. ["Core", "Germany"].
+
+EMPTY PAGES
+
+Most pages contain no reportable figures, or only figures for metrics outside
+the 11 listed: cover pages, contents pages, narrative commentary, charts with
+no tabulated numbers, org charts, notes, disclaimers. When a page holds no
+in-scope KPI figures, return exactly:
+{"kpis": []}
+This is the correct, expected answer -- not a failure, and it needs no
+explanation. Never invent, estimate, or infer KPIs to fill the array, and
+never carry over figures from pages you have not been shown -- you are seeing
+one page in isolation. Omit a KPI entirely rather than emitting it with no
+observations. Use null for any single field you cannot read off this page
+rather than guessing. If a period_type or measure on the page doesn't fit the
+allowed sets, omit that observation rather than forcing it into the wrong
+bucket.
+
+PERIOD FORMAT
+
+Always use the full year in `period`.
 Correct: 2022-12
-Incorrect: 22-12**
-**IMPORTANT:** 
-- name MUST ALWAYS BE A FINANCIAL METRIC
-- WHENEVER POSSIBLE, COMBINE MULTIPLE AXES OF A DATAPOINT INTO A SINGLE OBSERVATION USING 'dimensions' LIST
-- WHEN TWO OBSERVATIONS UNDER SAME KPI DIFFER ONLY IN THEIR VALUE, THEY MUST DIFFER IN DIMENSIONS -- FIND THE ACTUAL FINER LABEL (ROW, COLUMN, ENTITY, REGION, ETC.) THAT DISTINGUISHES THEM ON THE PAGE. NEVER LEAVE TWO OBSERVATIONS WITH THE SAME DIMENSIONS LIST.
-- NEVER INCLUDE KPI NAME IN 'dimensions' LIST
-- FOR CHARTS, PLOTS, AND TABLES: SEGMENTS, LEGEND ENTRIES, CATEGORIES, ROW LABELS, AND COLUMN HEADERS THAT NAME A SLICE OF THE METRIC (PIE SLICES, STACKED-BAR SEGMENTS, MULTI-LINE SERIES, TABLE ROWS/COLUMNS BY REGION/ENTITY/CHANNEL/ETC.) ALWAYS GO IN 'dimensions' -- NEVER INTO 'name', 'measure', OR ANY OTHER FIELD
-- WHEN CREATING THE FINAL JSON STRUCTURE, PRIORITISE COMPACT STRUCTURE OVER VERBOSE
-- ALWAYS USE DISTINCT dimensions LIST FOR EVERY OBSERVATION IN A LIST
+Incorrect: 22-12
+
+EXAMPLE RESPONSE FORMAT:
+
+```
+{
+  "kpis": [
+    {
+      "name": "Revenue",
+      "observations": [
+        {"period": "2023-12", "period_type": "FY", "measure": "actual", "fx_basis": "reported", "value": 120.5, "currency": "EUR", "unit": "M EUR", "dimensions": ["Retail"]},
+        {"period": "2023-12", "period_type": "FY", "measure": "budget", "fx_basis": "reported", "value": 115.0, "currency": "EUR", "unit": "M EUR", "dimensions": ["Retail"]},
+        {"period": "2023-12", "period_type": "FY", "measure": "actual", "fx_basis": "reported", "value": 45.2, "currency": "EUR", "unit": "M EUR", "dimensions": ["Wholesale"]},
+        {"period": "2023-12", "period_type": "FY", "measure": "budget", "fx_basis": "reported", "value": 50.0, "currency": "EUR", "unit": "M EUR", "dimensions": ["Wholesale"]}
+      ]
+    },
+    {
+      "name": "Opex",
+      "observations": [
+        {"period": "2023-12", "period_type": "FY", "measure": "actual", "fx_basis": "reported", "value": 30.0, "currency": "EUR", "unit": "M EUR", "dimensions": ["Core"]},
+        {"period": "2023-12", "period_type": "FY", "measure": "actual", "fx_basis": "reported", "value": 5.0, "currency": "EUR", "unit": "M EUR", "dimensions": ["Commissions"]}
+      ]
+    }
+  ]
+}
+```
+
+HARD RULES
+- Extract only the 11 metrics listed above -- nothing else.
+- `name` must always be one of the 11 metrics (as printed on the page).
+- `period_type` must be one of: MTH, YTD, LTM, FY.
+- `measure` must be one of: actual, actual_ly, budget, forecast.
+- Never put the KPI name inside `dimensions`.
+- Every segment, legend entry, category, row label, or column header naming a
+  slice of a metric goes in `dimensions` -- never in `name`, `measure`, or
+  any other field.
+- Two observations under the same KPI must never share an identical
+  `dimensions` list.
+- Prioritise a compact JSON structure over a verbose one.
+- `fx_basis` must be one of: reported, constant. Default to `reported`
+  unless the page explicitly marks a figure as constant currency / cc.
 """
 
 # Runs once per PDF upload, over the first N specified pages of document, and its answer is

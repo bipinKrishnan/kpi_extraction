@@ -17,6 +17,7 @@ JSON has been parsed.
 """
 
 import re
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -107,31 +108,32 @@ class Observation(_Strict):
     """
 
     period: str
-    period_type: PeriodType
-    measure: Measure
+    period_type: Literal["MTH", "YTD", "LTM", "FY"]
+    measure: Literal["actual", "actual_ly", "budget", "forecast"]
+    fx_basis: Literal["reported", "constant"]
     value: float | None
     unit: str | None
     currency: str | None
     dimensions: list[str] | None
 
-    @field_validator("period")
-    @classmethod
-    def _check_period(cls, value: str) -> str:
-        return _validated_period(value)  # type: ignore[return-value]
+    # @field_validator("period")
+    # @classmethod
+    # def _check_period(cls, value: str) -> str:
+    #     return _validated_period(value)  # type: ignore[return-value]
 
-    @field_validator("period_type")
-    @classmethod
-    def _normalise_period_type(cls, value: str) -> str:
-        """Canonicalise a known span label, upper-casing an unknown one."""
-        key = _vocabulary_key("period_type", value)
-        return _PERIOD_TYPE_SYNONYMS.get(key, key.upper())
+    # @field_validator("period_type")
+    # @classmethod
+    # def _normalise_period_type(cls, value: str) -> str:
+    #     """Canonicalise a known span label, upper-casing an unknown one."""
+    #     key = _vocabulary_key("period_type", value)
+    #     return _PERIOD_TYPE_SYNONYMS.get(key, key.upper())
 
-    @field_validator("measure")
-    @classmethod
-    def _normalise_measure(cls, value: str) -> str:
-        """Canonicalise a known figure variant, keeping an unknown one as-is."""
-        key = _vocabulary_key("measure", value)
-        return _MEASURE_SYNONYMS.get(key, key)
+    # @field_validator("measure")
+    # @classmethod
+    # def _normalise_measure(cls, value: str) -> str:
+    #     """Canonicalise a known figure variant, keeping an unknown one as-is."""
+    #     key = _vocabulary_key("measure", value)
+    #     return _MEASURE_SYNONYMS.get(key, key)
 
 
 class Kpi(_Strict):

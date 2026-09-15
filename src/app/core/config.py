@@ -35,7 +35,7 @@ EXTRACT_SCHEMA_NAME = "kpi-extraction"  # label only; vLLM does not interpret it
 EXTRACT_TEMPERATURE = 0
 EXTRACT_TOP_P = 1.0
 EXTRACT_THINKING_MODE = False
-EXTRACT_MAX_TOKENS = 110480
+EXTRACT_MAX_TOKENS = 110955
 # How many units may be in structured extraction at once, for the whole worker
 # process. The fleet can absorb MAX_CONTAINERS * MAX_NUM_SEQS = 96, but this is
 # per app worker and several app containers share one fleet.

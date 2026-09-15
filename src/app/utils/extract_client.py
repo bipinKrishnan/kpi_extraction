@@ -246,8 +246,7 @@ class ExtractClient:
                 {
                     "type": "text",
                     "text": (
-                        "Reporting period of this report: "
-                        f"{reporting_period}"
+                        f"{reporting_period} Closing"
                     ),
                 },
                 _image_content(image_url),

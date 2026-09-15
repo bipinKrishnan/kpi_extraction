@@ -114,9 +114,6 @@ def extract_page_number(label):
     """
     Extract page information from the API extraction label.
 
-    The API response places page information in:
-        extractions[*]["label"]
-
     Examples:
         "Page 12"
         "Page: 12"
@@ -196,6 +193,7 @@ def flatten_extractions(response_data, default_source):
                                         "value": "...",
                                         "currency": "...",
                                         "unit": "...",
+                                        "fx_basis": "...",
                                         "dimensions": [...]
                                     }
                                 ]
@@ -225,6 +223,7 @@ def flatten_extractions(response_data, default_source):
         - value
         - currency
         - unit
+        - fx_basis
         - tags
     """
 
@@ -343,6 +342,14 @@ def flatten_extractions(response_data, default_source):
                     dimensions
                 )
 
+                # ------------------------------------------------
+                # NEW: FX basis
+                # ------------------------------------------------
+
+                fx_basis = observation.get(
+                    "fx_basis"
+                )
+
                 rows.append(
                     {
                         "source": source,
@@ -387,6 +394,9 @@ def flatten_extractions(response_data, default_source):
                             "unit"
                         ),
 
+                        # NEW
+                        "fx_basis": fx_basis,
+
                         "tags": tags,
                     }
                 )
@@ -427,16 +437,16 @@ def extract_single_file(
         # ====================================================
         # PRODUCTION API REQUEST
         # ====================================================
-        
+
         response = requests.post(
             ENDPOINT,
             headers=headers,
             files=files,
             timeout=3600,
         )
-        
+
         response.raise_for_status()
-        
+
         return {
             "filename": filename,
             "success": True,
@@ -574,6 +584,16 @@ def build_observation_display_df(measure_df):
                     if pd.notna(
                         row.get("unit")
                     )
+                    else "—"
+                ),
+
+                # NEW: FX Basis
+                "FX Basis": (
+                    row.get("fx_basis")
+                    if pd.notna(
+                        row.get("fx_basis")
+                    )
+                    and row.get("fx_basis") is not None
                     else "—"
                 ),
 
@@ -1594,6 +1614,10 @@ if "result_df" in st.session_state:
 
                         current_row += 1
 
+                        # ------------------------------------------------
+                        # Headers
+                        # ------------------------------------------------
+
                         headers = [
                             "Source Document",
                             "Page",
@@ -1602,6 +1626,7 @@ if "result_df" in st.session_state:
                             "Value",
                             "Currency",
                             "Unit",
+                            "FX Basis",
                             "Tags",
                         ]
 
@@ -1651,6 +1676,10 @@ if "result_df" in st.session_state:
 
                             unit = row.get(
                                 "unit"
+                            )
+
+                            fx_basis = row.get(
+                                "fx_basis"
                             )
 
                             source_document = row.get(
@@ -1705,6 +1734,16 @@ if "result_df" in st.session_state:
                                     if pd.notna(
                                         unit
                                     )
+                                    else "—"
+                                ),
+
+                                # NEW: FX Basis
+                                (
+                                    fx_basis
+                                    if pd.notna(
+                                        fx_basis
+                                    )
+                                    and fx_basis is not None
                                     else "—"
                                 ),
 
@@ -1790,9 +1829,15 @@ if "result_df" in st.session_state:
                 )
             ].width = width
 
+        # Tags column moved from H to I
+        worksheet.column_dimensions[
+            "I"
+        ].width = 45
+
+        # Give FX Basis a reasonable width
         worksheet.column_dimensions[
             "H"
-        ].width = 45
+        ].width = 20
 
         worksheet.freeze_panes = "A1"
 
@@ -1832,7 +1877,7 @@ if "result_df" in st.session_state:
     st.caption(
         "Observations are grouped by source document, "
         "then page, KPI, and measure. Each observation "
-        "includes its source document and page number."
+        "includes its source document, page number, and FX basis."
     )
 
     display_kpi_view(
