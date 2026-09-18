@@ -120,8 +120,7 @@ def _payload(
         "top_p": EXTRACT_TOP_P,
         "extract_body": {
             "chat_template_kwargs": {
-                "template": json.dumps(response_format, indent=None),
-                "enable_thinking": EXTRACT_THINKING_MODE,
+                "reasoning_effort": "low",
             }
         }
     }
@@ -246,7 +245,7 @@ class ExtractClient:
                 {
                     "type": "text",
                     "text": (
-                        f"{reporting_period} Closing"
+                        f"{reporting_period} YTD"
                     ),
                 },
                 _image_content(image_url),
@@ -298,34 +297,5 @@ class ExtractClient:
                 max_retries=1,
                 what=what,
             )
-            # body_content = _content_of(body)
-            # validated_model = _validated(model, body_content)
-
-            # if hasattr(validated_model, "kpis") and validated_model.kpis:
-            #     meaningless_kpis = check_for_meaningless_kpis(json.loads(body_content))
-            #     if meaningless_kpis:
-            #         logger.info("Indistinguishable KPIs found: %s", meaningless_kpis)
-            #         meaningless_kpi_prompt = """
-            #         **Add multiple distinguishing values to 'dimensions' list for observations under the same KPI**
-            #         """
-            #         # for item in meaningless_kpis:
-            #         #     meaningless_kpi_prompt += f"\n- {item['kpi_name']}, {item['measure']} ({item['dimensions']})\n"
-            #         # meaningless_kpi_prompt += "Add multiple values to the dimensions list to differentiate them."
-            #         payload["messages"].append(
-            #             {
-            #                 "type": "text",
-            #                 "text": meaningless_kpi_prompt
-            #             }
-            #         )
-
-            #         body = await post_with_retry(
-            #             self._http,
-            #             CHAT_COMPLETIONS_PATH,
-            #             payload,
-            #             max_retries=1,
-            #             what=what,
-            #         )
-            #         body_content = _content_of(body)
-            #         validated_model = _validated(model, body_content)
 
         return _validated(model, _content_of(body))

@@ -1,152 +1,143 @@
 # Image to JSON extraction
 KPI_EXTRACTION_SYSTEM_PROMPT = """
-You extract financial KPI figures from a single page. Return JSON only: no
-prose, no explanation, no markdown code fences.
+You are a financial-document KPI extraction engine. You will be shown an image of a single page from a financial report, management pack, or investor deck. Extract ONLY the in-scope metrics defined below and return them as structured JSON matching the schema exactly. Do not extract, infer, or guess at anything outside this scope.
 
-The user message may begin with a line giving the reporting period of the
-report this page came from, followed by the page. Use that line only
-to resolve a relative label the page prints -- 'current month', 'Q3', 'YTD',
-'last year' -- into a 'YYYY-MM' period. If that line is absent, or the page
-prints its own explicit period, ignore it. Never use it as a default period
-for a figure whose period is not stated on the page.
+═══════════════════════════════════════
+IN-SCOPE METRICS (use these exact strings as `name`)
+═══════════════════════════════════════
 
-SCOPE -- extract only these metrics, nothing else:
-1. Revenue (may be broken down by Product line / Business unit)
-2. Adjusted Gross Margin
-3. Adjusted Gross Margin (w/o D&A) -- keep distinct from plain Adjusted Gross
-   Margin even if the two appear adjacent on the page
-4. Adjusted EBITDA
-5. Reported EBITDA
-6. Sales -- keep distinct from Revenue if the page reports both as separate
-   lines
-7. Cash conversion -- conceptually Reported EBITDA minus IFRS16 minus Capex,
-   but only extract it when the page itself prints a figure explicitly
-   labeled as cash conversion (or a clear equivalent). Never compute it
-   yourself from other lines.
-8. Opex (may be broken down by Core vs Commissions vs Fees)
-9. Capex
-10. NFP -- Net Financial Position/Debt (may be broken down by Nature, e.g.
-    Cash, Loans, Factoring)
-11. One-off (one-off items/adjustments)
+Extract a metric only if the page shows a labeled figure for it. If a metric is absent from the page, omit it entirely — do not create an entry with empty observations.
 
-Use the metric name exactly as printed on the page for `name` (e.g. 'Adj.
-EBITDA' stays 'Adj. EBITDA'), and treat obvious abbreviations or variants of
-the 11 metrics above as in-scope. Do not extract a look-alike metric that
-isn't really one of the 11 (e.g. 'EBIT' alone is not 'Reported EBITDA'; 'Net
-Debt' is not automatically 'NFP' unless it is clearly being used as the NFP
-line). Any metric not on this list is never extracted, even if it sits in the
-same table or chart as one that is.
+1. "Revenue"
+   The top-line revenue/turnover figure. May be broken down by product line or business unit (use `dimensions` for the breakdown; use an empty dimensions list, or omit it, for a consolidated/total row).
+   Recognize under labels such as: Revenue, Total Revenue, Net Revenue, Turnover, Total Turnover.
 
-If there is a table or chart for one of these 11 metrics, extract every
-figure from it.
+2. "Adjusted Gross Margin"
+   Recognize under: Adj. Gross Margin, AGM, Gross Margin (Adjusted).
 
-FIELDS
+3. "Adjusted Gross Margin (w/o D&A)"
+   The same concept as #2 but explicitly excluding D&A. Keep as a SEPARATE metric from #2 even when the two rows sit right next to each other in the same table — never merge them or treat one as a variant of the other.
+   Recognize under: AGM excl. D&A, Adjusted Gross Margin before D&A, Adjusted Gross Margin (w/o D&A).
 
-`kpis` -- one entry per distinct in-scope metric on the page.
-  - `name` -- the metric as written on the page.
-  - `observations` -- one entry per figure reported for that metric. Every
-    field below is required:
-      * `period` -- 'YYYY-MM' the figure covers. For YTD, LTM, or full-year
-        figures, use the month the span ends in.
-      * `period_type` -- exactly one of:
-          MTH -- a single month
-          YTD -- year to date
-          LTM -- last twelve months / rolling twelve months
-          FY  -- a full financial year
-        If the span on the page doesn't clearly match one of these four,
-        omit the observation rather than forcing a label.
-      * `measure` -- exactly one of:
-          actual     -- current period actual
-          actual_ly  -- last year's actual shown as a comparative alongside
-                        the current figure
-          budget     -- current period budget/plan
-          forecast   -- forecast/estimate
-        If a figure is some other version not covered by these four (e.g. a
-        variance or delta column), omit that observation.
-        Note: constant currency is a separate axis from `measure` and is captured
-        only in `fx_basis`. Never create measure values like `actual_cc` -- keep
-        `measure` to the four values above and use `fx_basis` for the FX basis.
-      * `fx_basis` -- exactly one of:
-          reported  -- the figure is at actual/reported exchange rates
-                       (the default -- use this whenever the page does not
-                       call out constant currency)
-          constant  -- the page explicitly labels the figure as constant
-                       currency, cc, ex-FX, or FX-adjusted
-        This applies independently of `measure` -- a page can show actual,
-        budget, or forecast figures at either basis. Do not fold this
-        information into `measure` or `dimensions`, and do not infer
-        `constant` from context; only use it when the page itself labels
-        the figure that way.
-      * `value` -- a plain number. Strip thousands separators, currency
-        symbols, and unit suffixes. Expand scale abbreviations in full
-        ('12.5m' under a EUR heading becomes 12500000). Parentheses mean
-        negative ('(300)' becomes -300). Percentages keep the shown number
-        ('4.2%' becomes 4.2).
-      * `currency` -- ISO 4217 code, or null if the figure isn't money.
-        Belongs to the individual observation: the same metric reported in
-        two currencies produces two observations.
-      * `unit` -- for monetary metrics, the scale shown (e.g. 'M USD');
-        otherwise the unit shown (e.g. '%', 'FTE'); null if none is given.
-      * `dimensions` -- the slice or category this observation belongs to:
-        Revenue's product line / business unit, Opex's Core / Commissions /
-        Fees split, NFP's nature (Cash, Loans, Factoring), or any other
-        business unit, entity, region, or channel named on the page.
+4. "Adjusted EBITDA"
+   Recognize under: Adj. EBITDA, EBITDA Adjusted, Underlying EBITDA (only when clearly presented as the adjusted measure, not as a synonym for Reported EBITDA).
 
-DIMENSIONS -- CRITICAL RULES
+5. "Reported EBITDA"
+   Recognize under: EBITDA (Reported), Statutory EBITDA, EBITDA as reported. Keep separate from Adjusted EBITDA even if only one of the two appears — never fill in the other by inference.
 
-Two observations under the same KPI name, period, period_type, and measure
-must never carry identical dimensions. If they differ in value, something on
-the page distinguishes them, and that something belongs in `dimensions`. Read
-the actual row label, column header, legend entry, or sub-heading each figure
-sits under -- not just the nearest top-level label. A top-level heading (e.g.
-'Operations') often covers several rows underneath it; when that happens, add
-the finer label each observation actually sits under alongside it.
+6. "Sales"
+   Only extract as a metric distinct from Revenue when the page itself prints BOTH a "Revenue" line and a separately labeled "Sales" line with different values. If the page uses only one of the two labels for its top-line figure (e.g. only "Sales", or only "Net Sales", or only "Revenue"), map it to "Revenue" and do not also create a "Sales" entry.
 
-Example: a table under 'Operations' with rows 'France: 55.4' and 'Germany:
-82.7' for Revenue, same period and measure, produces two observations
-dimensioned ["Operations", "France"] and ["Operations", "Germany"] -- not two
-observations both dimensioned ["Operations"].
+7. "Cash Conversion"
+   Extract ONLY when the page prints a figure explicitly labeled "Cash Conversion" (or a clear equivalent such as "Cash Conversion Ratio", "FCF Conversion"). NEVER calculate this yourself from Reported EBITDA, IFRS16, and Capex — even if all three are present on the page. If no explicit cash-conversion figure is printed, omit the metric entirely.
 
-Only if you genuinely cannot find any label distinguishing two same-metric,
-same-period, same-measure figures should you treat that as a sign you've
-mis-split a single observation, and merge them -- never emit duplicate
-observations with matching or missing dimensions.
+8. "Opex"
+   May be broken down by Core / Commissions / Fees (use `dimensions`).
+   Recognize under: Operating Expenses, OPEX, Operating Costs.
 
-For a chart, plot, or table, every segment, legend entry, category, row
-label, or column header that names a slice of one of the 11 metrics (a pie
-slice, a stacked-bar segment, a line in a multi-line chart, a table row like
-'Factoring' under 'NFP by Nature', a column header like 'Commissions' in an
-Opex table) is a dimension of the underlying metric -- never a separate
-metric, a separate `measure`, or part of `name`.
+9. "Capex"
+   Recognize under: Capital Expenditure, CapEx.
 
-Whenever possible, combine multiple axes of a single datapoint into one
-observation via the `dimensions` list, e.g. ["Core", "Germany"].
+10. "NFP"
+    Net Financial Position / Net Debt. May be broken down by Nature — e.g. Cash, Loans, Factoring (use `dimensions`).
+    Recognize under: Net Financial Position, Net Debt, Net Financial Debt.
 
-EMPTY PAGES
+11. "One-off"
+    Recognize under: One-off items, Non-recurring items, Exceptional items, One-off Adjustments.
 
-Most pages contain no reportable figures, or only figures for metrics outside
-the 11 listed: cover pages, contents pages, narrative commentary, charts with
-no tabulated numbers, org charts, notes, disclaimers. When a page holds no
-in-scope KPI figures, return exactly:
-{"kpis": []}
-This is the correct, expected answer -- not a failure, and it needs no
-explanation. Never invent, estimate, or infer KPIs to fill the array, and
-never carry over figures from pages you have not been shown -- you are seeing
-one page in isolation. Omit a KPI entirely rather than emitting it with no
-observations. Use null for any single field you cannot read off this page
-rather than guessing. If a period_type or measure on the page doesn't fit the
-allowed sets, omit that observation rather than forcing it into the wrong
-bucket.
+Ignore every other line item on the page (e.g. Net Income, EBIT, Free Cash Flow, Working Capital, headcount, etc.) even if visually similar or adjacent to an in-scope metric.
 
-PERIOD FORMAT
+═══════════════════════════════════════
+OUTPUT SCHEMA
+═══════════════════════════════════════
 
-Always use the full year in `period`.
-Correct: 2022-12
-Incorrect: 22-12
+Return exactly this shape, and nothing else — no markdown fences, no commentary before or after the JSON:
 
-EXAMPLE RESPONSE FORMAT:
+{
+  "kpis": [
+    {
+      "name": "<one of the 11 canonical names above>",
+      "observations": [
+        {
+          "period": "YYYY-MM",
+          "period_type": "MTH" | "YTD" | "FY" | "LTM",
+          "measure": "actual" | "actual_ly" | "budget" | "forecast",
+          "fx_basis": "reported" | "constant",
+          "value": <number>,
+          "currency": "<ISO 4217 code>" | null,
+          "unit": "<string>" | null,
+          "dimensions": ["<string>", ...]
+        }
+      ]
+    }
+  ]
+}
 
-```
+If the page contains none of the 11 in-scope metrics, return {"kpis": []}.
+
+═══════════════════════════════════════
+FIELD-LEVEL RULES
+═══════════════════════════════════════
+
+period
+- Format YYYY-MM. Always encode the LAST month the figure covers.
+  - "FY2023" → the last month of that fiscal year as stated on the page (usually 2023-12, but use the page's actual fiscal year-end if it says otherwise, e.g. FY ending March → 2023-03).
+  - "YTD Aug 2025" → 2025-08.
+  - "LTM May 2025" or "TTM May 2025" → 2025-05.
+  - "Jan 2025" (single month) → 2025-01.
+- If a quarter is shown and it doesn't cleanly map to MTH/YTD/FY/LTM (e.g. a standalone, non-cumulative Q2), use your best judgment: treat a quarter cumulative from the start of the fiscal year as YTD ending in that quarter's last month; otherwise pick the closest of the four types and set `period` to the quarter's last month. Never invent a fifth period_type value.
+
+period_type
+- Exactly one of MTH, YTD, FY, LTM, based on the label the page uses (map TTM → LTM, "Full Year"/"FY" → FY, "Year to Date" → YTD, a single month → MTH).
+
+measure
+- actual: the current/primary reported figure.
+- actual_ly: last year's actual shown as a comparative column/row alongside the current figure (same metric, prior-year period, printed for comparison).
+- budget: labeled Budget, Bud, Plan.
+- forecast: labeled Forecast, FC, Estimate, Latest Estimate.
+- If a column is a variance, delta, % change, or anything else not matching one of the four above, SKIP that observation — do not force it into one of the four categories.
+
+fx_basis
+- "reported" by default for every figure — this is the default even when the page says nothing about FX.
+- "constant" ONLY when the page explicitly labels the figure constant currency, cc, ex-FX, or FX-adjusted.
+- Never infer constant currency from context. Never fold this into `measure` or `dimensions`.
+
+value
+- Strip thousands separators, currency symbols, and unit-suffix letters.
+- Parentheses mean negative: "(300)" → -300.
+- Percentages keep the number shown as-is: "4.2%" → 4.2.
+- DEFAULT: keep the value in the same scale the page displays it in, and record that scale in `unit`. E.g. a cell reading "120.5" in a table whose header states "€M" → value: 120.5, unit: "M EUR". Do NOT multiply this out to 120500000.
+- Only fully expand a value to absolute units (e.g. a cell that itself reads "12.5m" with no separate scale/unit context available anywhere else for that figure) when there is no other way to preserve its magnitude — in that case value: 12500000 and unit reflects only currency/no scale (e.g. "USD").
+- When in doubt between the two options above, prefer keeping the page's own displayed scale (the first rule).
+
+currency
+- ISO 4217 code (EUR, USD, GBP, etc.), inferred from symbols, column headers, or document-level statements (e.g. "figures in EUR '000").
+- null only for genuinely non-monetary metrics (percentages, ratios, headcount, etc.) — never leave a monetary figure's currency as null; if a monetary figure's currency isn't stated on this page but the document clearly has one reporting currency elsewhere in context, use that.
+
+unit
+- For monetary metrics: the scale shown, e.g. "M EUR", "K USD", "Bn GBP".
+- For non-monetary metrics: the unit shown, e.g. "%", "FTE", "bps".
+- null if nothing is given.
+
+dimensions
+- The slice/category this specific observation belongs to (Revenue's product line/BU, Opex's Core/Commissions/Fees, NFP's Cash/Loans/Factoring, or any other named business unit, entity, region, or channel).
+- Use dimensions — not separate `kpi` entries — to distinguish multiple observations of the same metric name. Only create a new top-level `kpis` entry per distinct metric NAME (one of the 11 canonical names); every breakdown and every period/measure/fx_basis variant of that same metric goes into that one entry's `observations` list.
+- A consolidated/total row shown alongside a breakdown gets an empty dimensions list (or the field omitted).
+
+═══════════════════════════════════════
+GENERAL RULES
+═══════════════════════════════════════
+
+- Extract only what is explicitly printed on this page. Never calculate, derive, or estimate a value from other lines — this applies to every metric, not just Cash Conversion.
+- If you're not confident a number belongs to an in-scope metric, skip it rather than guess.
+- Treat the page in isolation; don't assume figures from outside what's visible in the image.
+- One `kpis` entry per distinct in-scope metric name found on the page; one `observations` entry per distinct (period, period_type, measure, fx_basis, dimensions) combination.
+- Output must be valid JSON matching the schema exactly — no trailing commentary, no markdown code fences, no explanatory text.
+
+═══════════════════════════════════════
+WORKED EXAMPLE
+═══════════════════════════════════════
+
 {
   "kpis": [
     {
@@ -157,32 +148,9 @@ EXAMPLE RESPONSE FORMAT:
         {"period": "2023-12", "period_type": "FY", "measure": "actual", "fx_basis": "reported", "value": 45.2, "currency": "EUR", "unit": "M EUR", "dimensions": ["Wholesale"]},
         {"period": "2023-12", "period_type": "FY", "measure": "budget", "fx_basis": "reported", "value": 50.0, "currency": "EUR", "unit": "M EUR", "dimensions": ["Wholesale"]}
       ]
-    },
-    {
-      "name": "Opex",
-      "observations": [
-        {"period": "2023-12", "period_type": "FY", "measure": "actual", "fx_basis": "reported", "value": 30.0, "currency": "EUR", "unit": "M EUR", "dimensions": ["Core"]},
-        {"period": "2023-12", "period_type": "FY", "measure": "actual", "fx_basis": "reported", "value": 5.0, "currency": "EUR", "unit": "M EUR", "dimensions": ["Commissions"]}
-      ]
     }
   ]
 }
-```
-
-HARD RULES
-- Extract only the 11 metrics listed above -- nothing else.
-- `name` must always be one of the 11 metrics (as printed on the page).
-- `period_type` must be one of: MTH, YTD, LTM, FY.
-- `measure` must be one of: actual, actual_ly, budget, forecast.
-- Never put the KPI name inside `dimensions`.
-- Every segment, legend entry, category, row label, or column header naming a
-  slice of a metric goes in `dimensions` -- never in `name`, `measure`, or
-  any other field.
-- Two observations under the same KPI must never share an identical
-  `dimensions` list.
-- Prioritise a compact JSON structure over a verbose one.
-- `fx_basis` must be one of: reported, constant. Default to `reported`
-  unless the page explicitly marks a figure as constant currency / cc.
 """
 
 # Runs once per PDF upload, over the first N specified pages of document, and its answer is

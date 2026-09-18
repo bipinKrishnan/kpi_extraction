@@ -28,14 +28,14 @@ OCR_TOP_P = 0.9
 OCR_MAX_TOKENS = 4096
 
 # --- the structured extraction service ---
-EXTRACT_MODEL_NAME = "extract"  # --served-model-name in src/extract/modal_app.py
+EXTRACT_MODEL_NAME = "z-ai/glm-5.3-flash"
 EXTRACT_SCHEMA_NAME = "kpi-extraction"  # label only; vLLM does not interpret it
 # Json extraction must be reproducible, so no sampling at all. Re-running a unit has
 # to give the same JSON, otherwise a failed validation is unreproducible.
 EXTRACT_TEMPERATURE = 0
 EXTRACT_TOP_P = 1.0
 EXTRACT_THINKING_MODE = False
-EXTRACT_MAX_TOKENS = 110955
+EXTRACT_MAX_TOKENS = 131000
 # How many units may be in structured extraction at once, for the whole worker
 # process. The fleet can absorb MAX_CONTAINERS * MAX_NUM_SEQS = 96, but this is
 # per app worker and several app containers share one fleet.
@@ -65,7 +65,7 @@ OCR_CONCURRENCY = 32
 # A dense page takes tens of seconds, and with min_containers=0 the first
 # request after an idle period also waits for a container to boot.
 REQUEST_TIMEOUT_SECONDS = 300.0
-MAX_RETRIES = 3
+MAX_RETRIES = 1
 
 
 class Settings(BaseSettings):

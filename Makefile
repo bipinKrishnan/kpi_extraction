@@ -17,9 +17,9 @@ check:
 # them. .NOTPARALLEL keeps that order even under `make -j`.
 .NOTPARALLEL:
 
-deploy: deploy-extract deploy-fastapi deploy-web-app
+deploy: deploy-fastapi deploy-web-app
 
-deploy-backend: deploy-extract deploy-fastapi
+deploy-backend: deploy-fastapi
 
 deploy-ocr:
 	uv run modal deploy src/ocr/modal_app.py

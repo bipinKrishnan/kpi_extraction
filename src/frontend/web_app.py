@@ -1,12 +1,18 @@
 import os
 import re
 import time
+import json
+from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import requests
 import streamlit as st
 from dotenv import load_dotenv
+
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
 
 
 # ============================================================
@@ -40,23 +46,89 @@ ALLOWED_EXTENSIONS = [
 ]
 
 MAX_FILES = 20
-
 MAX_FILE_SIZE_MB = 50
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
-
 MAX_WORKERS = 5
-
 REQUEST_START_DELAY_SECONDS = 2
 
+# Financial reporting order
+MEASURE_ORDER = [
+    "actual",
+    "actual_ly",
+    "budget",
+    "forecast",
+]
+
+PERIOD_TYPE_ORDER = {
+    "MTH": 1,
+    "YTD": 2,
+    "LTM": 3,
+    "FY": 4,
+}
+
 
 # ============================================================
-# Tag helpers
+# Generic helpers
 # ============================================================
 
-def normalize_tags(dimensions):
+def is_missing(value):
+    """Safely determine whether a value should be treated as missing."""
+
+    if value is None:
+        return True
+
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def clean_value(value):
+    """Return None for missing values, otherwise preserve the value."""
+
+    if is_missing(value):
+        return None
+
+    if isinstance(value, str):
+        value = value.strip()
+
+        if not value:
+            return None
+
+    return value
+
+
+def normalize_scalar(value):
     """
-    Normalize the API dimensions field into a flat list
-    of strings.
+    Convert API fields that may accidentally arrive as a one-item
+    list/tuple into a scalar.
+
+    Example:
+        ["MTH"] -> "MTH"
+        "MTH"   -> "MTH"
+    """
+
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return None
+
+        if len(value) == 1:
+            return value[0]
+
+        # If multiple values arrive where a scalar is expected,
+        # retain them in a readable form.
+        return ", ".join(str(item) for item in value)
+
+    return value
+
+
+# ============================================================
+# Dimension helpers
+# ============================================================
+
+def normalize_dimensions(dimensions):
+    """
+    Normalize the API dimensions field into a list of strings.
 
     Supports:
         - None
@@ -93,17 +165,20 @@ def normalize_tags(dimensions):
     return [str(dimensions)]
 
 
-def format_tags(tags):
+def format_dimensions(dimensions):
     """
-    Convert a list of tags into a display-friendly string.
+    Keep dimensions represented as a JSON-style list in Excel.
+
+    Example:
+        ["Europe", "Consumer"]
     """
 
-    normalized = normalize_tags(tags)
+    normalized = normalize_dimensions(dimensions)
 
-    if not normalized:
-        return "—"
-
-    return ", ".join(normalized)
+    return json.dumps(
+        normalized,
+        ensure_ascii=False,
+    )
 
 
 # ============================================================
@@ -124,9 +199,6 @@ def extract_page_number(label):
         "page=12"
         "page-12"
         "pages 12-13"
-
-    The original label is retained separately as
-    extraction_label for traceability.
     """
 
     if label is None:
@@ -158,19 +230,265 @@ def extract_page_number(label):
 
 
 # ============================================================
+# Value helper
+# ============================================================
+
+def convert_value(value):
+    """
+    Convert numeric-looking API values to actual Python numbers.
+
+    Examples:
+        "12500000"       -> 12500000
+        "12,500,000"     -> 12500000
+        "12.5%"          -> 0.125
+        "EUR 12,500,000" -> remains string
+
+    The function intentionally avoids aggressive parsing of
+    ambiguous financial values.
+    """
+
+    value = clean_value(value)
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, float)):
+        return value
+
+    text = str(value).strip()
+
+    # Remove common thousands separators
+    numeric_text = text.replace(",", "").strip()
+
+    # Percentage
+    if numeric_text.endswith("%"):
+        try:
+            number = float(numeric_text[:-1].strip())
+            return number / 100
+        except ValueError:
+            return value
+
+    # Plain integer / decimal
+    try:
+        if re.fullmatch(
+            r"[-+]?\d+",
+            numeric_text,
+        ):
+            return int(numeric_text)
+
+        if re.fullmatch(
+            r"[-+]?(?:\d+\.\d*|\.\d+)",
+            numeric_text,
+        ):
+            return float(numeric_text)
+
+    except ValueError:
+        pass
+
+    return value
+
+
+# ============================================================
+# Period helpers
+# ============================================================
+
+def normalize_period_type(period_type):
+    """Normalize period type to uppercase."""
+
+    period_type = normalize_scalar(period_type)
+
+    if period_type is None:
+        return None
+
+    return str(period_type).strip().upper()
+
+
+def normalize_measure(measure):
+    """Normalize measure to lowercase."""
+
+    measure = normalize_scalar(measure)
+
+    if measure is None:
+        return None
+
+    return str(measure).strip().lower()
+
+
+def normalize_fx_basis(fx_basis):
+    """
+    Normalize FX basis into a readable scalar value.
+
+    This supports the same possible API shapes as other scalar
+    observation fields, including a one-item list/tuple.
+    """
+
+    fx_basis = normalize_scalar(fx_basis)
+
+    if fx_basis is None:
+        return None
+
+    return str(fx_basis).strip()
+
+
+def period_sort_key(period):
+    """
+    Create a useful chronological sort key.
+
+    Handles common formats such as:
+        2026-08
+        2026-08-31
+        2026
+        FY2026
+        Q1 2026
+    """
+
+    if period is None:
+        return (9999, 99, 99, "")
+
+    text = str(period).strip().upper()
+
+    # YYYY-MM
+    match = re.search(
+        r"\b(20\d{2})[-/](\d{1,2})\b",
+        text,
+    )
+
+    if match:
+        year = int(match.group(1))
+        month = int(match.group(2))
+        return (year, month, 0, text)
+
+    # Q1 2026 / 2026 Q1
+    match = re.search(
+        r"\bQ([1-4])\s*[-/]?\s*(20\d{2})\b",
+        text,
+    )
+
+    if match:
+        quarter = int(match.group(1))
+        year = int(match.group(2))
+        return (year, quarter * 3, 1, text)
+
+    match = re.search(
+        r"\b(20\d{2})\s*[-/]?\s*Q([1-4])\b",
+        text,
+    )
+
+    if match:
+        year = int(match.group(1))
+        quarter = int(match.group(2))
+        return (year, quarter * 3, 1, text)
+
+    # FY2026 / 2026
+    match = re.search(
+        r"\bFY\s*(20\d{2})\b",
+        text,
+    )
+
+    if match:
+        year = int(match.group(1))
+        return (year, 12, 2, text)
+
+    match = re.fullmatch(
+        r"(20\d{2})",
+        text,
+    )
+
+    if match:
+        return (int(match.group(1)), 12, 2, text)
+
+    # Fallback
+    return (9999, 99, 99, text)
+
+
+def column_sort_key(column):
+    """
+    Sort a financial matrix column by:
+        1. Period
+        2. Period Type
+        3. Measure
+    """
+
+    period = column["period"]
+    period_type = column["period_type"]
+    measure = column["measure"]
+
+    return (
+        period_sort_key(period),
+        PERIOD_TYPE_ORDER.get(
+            period_type,
+            99,
+        ),
+        (
+            MEASURE_ORDER.index(measure)
+            if measure in MEASURE_ORDER
+            else 99
+        ),
+        str(measure or ""),
+    )
+
+
+# ============================================================
 # Flatten API response
 # ============================================================
 
+def get_extractions(response_data):
+    """
+    Support both:
+
+    1. Current app response:
+        {
+            "extractions": [...]
+        }
+
+    2. Direct backend KPI response:
+        {
+            "kpis": [...]
+        }
+
+    Returns a normalized list of extraction-like objects.
+    """
+
+    if not isinstance(response_data, dict):
+        return []
+
+    # Current wrapper structure
+    if isinstance(
+        response_data.get("extractions"),
+        list,
+    ):
+        return response_data.get("extractions") or []
+
+    # Direct KPI structure
+    if isinstance(
+        response_data.get("kpis"),
+        list,
+    ):
+        return [
+            {
+                "source": None,
+                "label": None,
+                "data": {
+                    "kpis": response_data.get("kpis") or [],
+                },
+            }
+        ]
+
+    return []
+
+
 def flatten_extractions(response_data, default_source):
     """
-    Convert the backend response structure into one row
-    per KPI observation.
+    Convert backend response into one row per KPI observation.
 
-    Expected structure:
+    fx_basis is retained as an observation-level field.
+
+    Supported backend structure:
 
         {
-            "units": [...],
-            "skipped": [],
             "extractions": [
                 {
                     "source": "...",
@@ -187,12 +505,12 @@ def flatten_extractions(response_data, default_source):
                                 "name": "...",
                                 "observations": [
                                     {
-                                        "measure": "...",
                                         "period": "...",
-                                        "period_type": "...",
+                                        "period_type": "MTH",
+                                        "measure": "actual",
                                         "value": "...",
-                                        "currency": "...",
                                         "unit": "...",
+                                        "currency": "...",
                                         "fx_basis": "...",
                                         "dimensions": [...]
                                     }
@@ -201,30 +519,14 @@ def flatten_extractions(response_data, default_source):
                         ]
                     }
                 }
-            ],
-            "failed_extractions": []
+            ]
         }
 
-    Returns one dataframe row per observation.
+    Also supports direct:
 
-    Each row contains:
-        - source
-        - source_document
-        - page_number
-        - extraction_source
-        - extraction_label
-        - company
-        - holding
-        - reporting_period
-        - kpi
-        - measure
-        - period
-        - period_type
-        - value
-        - currency
-        - unit
-        - fx_basis
-        - tags
+        {
+            "kpis": [...]
+        }
     """
 
     rows = []
@@ -232,11 +534,7 @@ def flatten_extractions(response_data, default_source):
     if not isinstance(response_data, dict):
         return pd.DataFrame()
 
-    extractions = response_data.get("extractions") or []
-
-    # --------------------------------------------------------
-    # Process every extraction
-    # --------------------------------------------------------
+    extractions = get_extractions(response_data)
 
     for extraction in extractions:
 
@@ -252,7 +550,6 @@ def flatten_extractions(response_data, default_source):
             "label"
         )
 
-        # Page information comes from extraction label
         page_number = extract_page_number(
             extraction_label
         )
@@ -262,23 +559,17 @@ def flatten_extractions(response_data, default_source):
         if not isinstance(data, dict):
             continue
 
-        # ----------------------------------------------------
+        # --------------------------------------------------------
         # Document metadata
-        # ----------------------------------------------------
+        # --------------------------------------------------------
 
         document = data.get("document") or {}
 
         if not isinstance(document, dict):
             document = {}
 
-        company = document.get(
-            "company"
-        )
-
-        holding = document.get(
-            "holding"
-        )
-
+        company = document.get("company")
+        holding = document.get("holding")
         reporting_period = document.get(
             "reporting_period"
         )
@@ -287,7 +578,6 @@ def flatten_extractions(response_data, default_source):
             "source"
         )
 
-        # Prefer document source when available.
         source = (
             document_source
             or extraction_source
@@ -296,108 +586,108 @@ def flatten_extractions(response_data, default_source):
 
         source_document = source
 
-        # ----------------------------------------------------
-        # KPIs are nested inside data
-        # ----------------------------------------------------
+        # --------------------------------------------------------
+        # KPI list
+        # --------------------------------------------------------
 
         kpis = data.get("kpis") or []
 
         if not isinstance(kpis, list):
             continue
 
-        # ----------------------------------------------------
-        # Process KPIs
-        # ----------------------------------------------------
+        # --------------------------------------------------------
+        # KPIs
+        # --------------------------------------------------------
 
         for kpi in kpis:
 
             if not isinstance(kpi, dict):
                 continue
 
-            kpi_name = kpi.get(
-                "name"
+            kpi_name = kpi.get("name")
+
+            observations = (
+                kpi.get("observations")
+                or []
             )
 
-            observations = kpi.get(
-                "observations"
-            ) or []
-
-            if not isinstance(observations, list):
+            if not isinstance(
+                observations,
+                list,
+            ):
                 continue
 
-            # ------------------------------------------------
-            # Process observations
-            # ------------------------------------------------
+            # ----------------------------------------------------
+            # Observations
+            # ----------------------------------------------------
 
             for observation in observations:
 
-                if not isinstance(observation, dict):
+                if not isinstance(
+                    observation,
+                    dict,
+                ):
                     continue
 
-                dimensions = observation.get(
-                    "dimensions"
+                dimensions = normalize_dimensions(
+                    observation.get(
+                        "dimensions"
+                    )
                 )
 
-                tags = normalize_tags(
-                    dimensions
+                period = normalize_scalar(
+                    observation.get("period")
                 )
 
-                # ------------------------------------------------
-                # NEW: FX basis
-                # ------------------------------------------------
+                period_type = normalize_period_type(
+                    observation.get(
+                        "period_type"
+                    )
+                )
 
-                fx_basis = observation.get(
-                    "fx_basis"
+                measure = normalize_measure(
+                    observation.get(
+                        "measure"
+                    )
+                )
+
+                value = convert_value(
+                    observation.get("value")
+                )
+
+                unit = normalize_scalar(
+                    observation.get("unit")
+                )
+
+                currency = normalize_scalar(
+                    observation.get("currency")
+                )
+
+                # NEW:
+                # Preserve FX basis from each observation.
+                fx_basis = normalize_fx_basis(
+                    observation.get("fx_basis")
                 )
 
                 rows.append(
                     {
                         "source": source,
-
                         "source_document": source_document,
-
                         "page_number": page_number,
-
                         "extraction_source": extraction_source,
-
                         "extraction_label": extraction_label,
-
                         "company": company,
-
                         "holding": holding,
-
                         "reporting_period": reporting_period,
-
-                        "kpi": kpi_name,
-
-                        "measure": observation.get(
-                            "measure"
-                        ),
-
-                        "period": observation.get(
-                            "period"
-                        ),
-
-                        "period_type": observation.get(
-                            "period_type"
-                        ),
-
-                        "value": observation.get(
-                            "value"
-                        ),
-
-                        "currency": observation.get(
-                            "currency"
-                        ),
-
-                        "unit": observation.get(
-                            "unit"
-                        ),
-
-                        # NEW
+                        "kpi": clean_value(kpi_name),
+                        "measure": measure,
+                        "period": period,
+                        "period_type": period_type,
+                        "value": value,
+                        "currency": currency,
                         "fx_basis": fx_basis,
-
-                        "tags": tags,
+                        "unit": unit,
+                        "dimensions": dimensions,
                     }
                 )
 
@@ -433,10 +723,6 @@ def extract_single_file(
                 or "application/octet-stream",
             )
         }
-
-        # ====================================================
-        # PRODUCTION API REQUEST
-        # ====================================================
 
         response = requests.post(
             ENDPOINT,
@@ -528,284 +814,1280 @@ def extract_single_file(
 
 
 # ============================================================
-# Build observation display dataframe
+# Financial matrix preparation
 # ============================================================
 
-def build_observation_display_df(measure_df):
+def build_financial_matrix(df):
     """
-    Build the Streamlit dataframe for observations.
-    """
+    Transform normalized observations into the financial-document
+    matrix.
 
-    display_rows = []
+    Rows:
+        Metric
+        Dimensions
+        FX Basis
+        UoM
 
-    for _, row in measure_df.iterrows():
+    Columns:
+        Period + Period Type
+            Actual
+            Actual LY
+            Budget
+            Forecast
 
-        display_rows.append(
-            {
-                "Source Document": (
-                    row.get("source_document")
-                    if pd.notna(
-                        row.get("source_document")
-                    )
-                    else "—"
-                ),
-
-                "Page": (
-                    row.get("page_number")
-                    if pd.notna(
-                        row.get("page_number")
-                    )
-                    and row.get("page_number") is not None
-                    else "—"
-                ),
-
-                "Period": row.get(
-                    "period"
-                ),
-
-                "Period Type": row.get(
-                    "period_type"
-                ),
-
-                "Value": row.get(
-                    "value"
-                ),
-
-                "Currency": (
-                    row.get("currency")
-                    if pd.notna(
-                        row.get("currency")
-                    )
-                    else "—"
-                ),
-
-                "Unit": (
-                    row.get("unit")
-                    if pd.notna(
-                        row.get("unit")
-                    )
-                    else "—"
-                ),
-
-                # NEW: FX Basis
-                "FX Basis": (
-                    row.get("fx_basis")
-                    if pd.notna(
-                        row.get("fx_basis")
-                    )
-                    and row.get("fx_basis") is not None
-                    else "—"
-                ),
-
-                "Tags": format_tags(
-                    row.get("tags")
-                ),
-            }
-        )
-
-    return pd.DataFrame(
-        display_rows
-    )
-
-
-# ============================================================
-# Display KPI-centric grouped view
-# ============================================================
-
-def display_kpi_view(df):
-    """
-    Display KPI observations grouped strictly by:
-
-        Source document
-            -> Page
-                -> KPI
-                    -> Measure
-                        -> Observations
-
-    This prevents KPIs from different pages from being mixed.
+    FX Basis is included in the row key so observations with
+    different FX bases remain separate rows.
     """
 
     if df.empty:
+        return pd.DataFrame(), []
 
-        st.warning(
-            "No KPI observations found."
+    working = df.copy()
+
+    # --------------------------------------------------------
+    # Ensure required columns exist
+    # --------------------------------------------------------
+
+    for column in [
+        "kpi",
+        "dimensions",
+        "fx_basis",
+        "unit",
+        "currency",
+        "period",
+        "period_type",
+        "measure",
+        "value",
+    ]:
+        if column not in working.columns:
+            working[column] = None
+
+    # --------------------------------------------------------
+    # Normalize values
+    # --------------------------------------------------------
+
+    working["kpi"] = working["kpi"].apply(
+        lambda x: (
+            str(x).strip()
+            if not is_missing(x)
+            else "Unnamed KPI"
         )
-
-        return
-
-    # ========================================================
-    # Source document
-    # ========================================================
-
-    source_groups = df.groupby(
-        "source",
-        sort=False,
-        dropna=False,
     )
 
-    for source, source_df in source_groups:
+    working["dimensions"] = working[
+        "dimensions"
+    ].apply(normalize_dimensions)
 
-        source_name = (
-            str(source)
-            if pd.notna(source)
-            else "Unknown source"
+    working["dimensions_display"] = working[
+        "dimensions"
+    ].apply(format_dimensions)
+
+    working["fx_basis"] = working[
+        "fx_basis"
+    ].apply(
+        lambda x: (
+            str(x).strip()
+            if not is_missing(x)
+            else ""
         )
+    )
 
-        with st.expander(
-            f"📄 {source_name} "
-            f"({len(source_df)} observations)",
-            expanded=True,
-        ):
+    working["unit"] = working["unit"].apply(
+        lambda x: (
+            str(x).strip()
+            if not is_missing(x)
+            else ""
+        )
+    )
 
-            # ------------------------------------------------
-            # Document metadata
-            # ------------------------------------------------
+    working["period"] = working["period"].apply(
+        normalize_scalar
+    )
 
-            metadata_row = source_df.iloc[0]
+    working["period_type"] = working[
+        "period_type"
+    ].apply(normalize_period_type)
 
-            company = metadata_row.get(
-                "company"
+    working["measure"] = working[
+        "measure"
+    ].apply(normalize_measure)
+
+    # --------------------------------------------------------
+    # Remove invalid matrix observations
+    # --------------------------------------------------------
+
+    working = working[
+        working["period"].notna()
+        & working["period_type"].notna()
+        & working["measure"].notna()
+    ].copy()
+
+    if working.empty:
+        return pd.DataFrame(), []
+
+    # --------------------------------------------------------
+    # Build unique financial columns
+    # --------------------------------------------------------
+
+    column_records = (
+        working[
+            [
+                "period",
+                "period_type",
+                "measure",
+            ]
+        ]
+        .drop_duplicates()
+        .to_dict("records")
+    )
+
+    column_records.sort(
+        key=column_sort_key
+    )
+
+    # --------------------------------------------------------
+    # Create row key
+    # --------------------------------------------------------
+    #
+    # FX Basis is deliberately included here.
+    # This prevents, for example:
+    #
+    # Revenue | EUR | Spot
+    # Revenue | EUR | Average
+    #
+    # from being collapsed into one row.
+    # --------------------------------------------------------
+
+    working["row_key"] = list(
+        zip(
+            working["kpi"],
+            working["dimensions_display"],
+            working["fx_basis"],
+            working["unit"],
+        )
+    )
+
+    # --------------------------------------------------------
+    # Handle duplicate observations
+    # --------------------------------------------------------
+
+    grouped_values = (
+        working.groupby(
+            [
+                "row_key",
+                "period",
+                "period_type",
+                "measure",
+            ],
+            sort=False,
+            dropna=False,
+        )["value"]
+        .apply(
+            lambda values: (
+                values.iloc[0]
+                if len(values) == 1
+                else " | ".join(
+                    str(v)
+                    for v in values
+                )
             )
+        )
+        .reset_index()
+    )
 
-            holding = metadata_row.get(
-                "holding"
-            )
+    # --------------------------------------------------------
+    # Build matrix rows
+    # --------------------------------------------------------
 
-            reporting_period = metadata_row.get(
-                "reporting_period"
-            )
+    matrix_rows = []
 
-            metadata_parts = []
+    unique_rows = (
+        working[
+            [
+                "row_key",
+                "kpi",
+                "dimensions_display",
+                "fx_basis",
+                "unit",
+            ]
+        ]
+        .drop_duplicates(
+            subset=["row_key"]
+        )
+    )
 
-            if pd.notna(company) and company:
+    for _, base_row in unique_rows.iterrows():
 
-                metadata_parts.append(
-                    f"**Company:** {company}"
+        row = {
+            "Metric": base_row["kpi"],
+            "Dimensions": base_row[
+                "dimensions_display"
+            ],
+            "FX Basis": base_row["fx_basis"],
+            "UoM": base_row["unit"],
+        }
+
+        row_key = base_row["row_key"]
+
+        matching_values = grouped_values[
+            grouped_values["row_key"]
+            == row_key
+        ]
+
+        for column in column_records:
+
+            period = column["period"]
+            period_type = column[
+                "period_type"
+            ]
+            measure = column["measure"]
+
+            match = matching_values[
+                (matching_values["period"] == period)
+                & (
+                    matching_values[
+                        "period_type"
+                    ]
+                    == period_type
                 )
-
-            if pd.notna(holding) and holding:
-
-                metadata_parts.append(
-                    f"**Holding:** {holding}"
+                & (
+                    matching_values[
+                        "measure"
+                    ]
+                    == measure
                 )
+            ]
 
-            if (
-                pd.notna(reporting_period)
-                and reporting_period
-            ):
+            if match.empty:
+                value = None
+            else:
+                value = match.iloc[0]["value"]
 
-                metadata_parts.append(
-                    f"**Reporting period:** "
-                    f"{reporting_period}"
+            row[
+                (
+                    period,
+                    period_type,
+                    measure,
                 )
+            ] = value
 
-            if metadata_parts:
+        matrix_rows.append(row)
 
-                st.markdown(
-                    "  \n".join(
-                        metadata_parts
-                    )
-                )
+    matrix_df = pd.DataFrame(matrix_rows)
 
-            st.divider()
+    # --------------------------------------------------------
+    # Sort rows
+    # --------------------------------------------------------
 
-            # =================================================
-            # PAGE
-            # =================================================
+    if not matrix_df.empty:
 
-            page_groups = source_df.groupby(
-                "page_number",
-                sort=False,
-                dropna=False,
-            )
+        matrix_df = matrix_df.sort_values(
+            by=[
+                "Metric",
+                "Dimensions",
+                "FX Basis",
+                "UoM",
+            ],
+            kind="stable",
+        ).reset_index(drop=True)
 
-            for page_number, page_df in page_groups:
-
-                if (
-                    pd.isna(page_number)
-                    or page_number is None
-                ):
-
-                    page_name = "Page Unknown"
-
-                else:
-
-                    page_name = (
-                        f"Page {page_number}"
-                    )
-
-                st.subheader(
-                    f"📑 {page_name}"
-                )
-
-                # =================================================
-                # KPI
-                # =================================================
-
-                kpi_groups = page_df.groupby(
-                    "kpi",
-                    sort=False,
-                    dropna=False,
-                )
-
-                for kpi, kpi_df in kpi_groups:
-
-                    kpi_name = (
-                        str(kpi)
-                        if pd.notna(kpi)
-                        else "Unnamed KPI"
-                    )
-
-                    observation_count = len(
-                        kpi_df
-                    )
-
-                    with st.expander(
-                        f"**{kpi_name}** "
-                        f"({observation_count} observations)",
-                        expanded=True,
-                    ):
-
-                        # =========================================
-                        # Measure
-                        # =========================================
-
-                        measure_groups = kpi_df.groupby(
-                            "measure",
-                            sort=False,
-                            dropna=False,
-                        )
-
-                        for measure, measure_df in measure_groups:
-
-                            measure_name = (
-                                str(measure)
-                                if pd.notna(measure)
-                                else "Unknown"
-                            )
-
-                            st.markdown(
-                                f"**Measure: "
-                                f"`{measure_name}`**"
-                            )
-
-                            observation_df = (
-                                build_observation_display_df(
-                                    measure_df
-                                )
-                            )
-
-                            st.dataframe(
-                                observation_df,
-                                use_container_width=True,
-                                hide_index=True,
-                            )
-
-                st.divider()
+    return matrix_df, column_records
 
 
 # ============================================================
-# Streamlit UI
+# Excel formatting helpers
+# ============================================================
+
+def format_measure_label(measure):
+    """Convert API measure name to Excel display label."""
+
+    labels = {
+        "actual": "Actual",
+        "actual_ly": "Actual LY",
+        "budget": "Budget",
+        "forecast": "Forecast",
+    }
+
+    return labels.get(
+        measure,
+        str(measure).replace("_", " ").title(),
+    )
+
+
+def format_period_header(period, period_type):
+    """
+    Build the first-level Excel header.
+
+    Example:
+        2026-08 – MTH
+    """
+
+    return (
+        f"{period} – {period_type}"
+    )
+
+
+def apply_value_number_format(
+    cell,
+    unit=None,
+    value=None,
+):
+    """
+    Apply sensible Excel number formatting.
+
+    We retain actual numeric values in Excel rather than writing
+    formatted strings wherever possible.
+    """
+
+    if value is None:
+        return
+
+    unit_text = (
+        str(unit).strip().lower()
+        if unit is not None
+        else ""
+    )
+
+    if "%" in unit_text or "percent" in unit_text:
+        cell.number_format = "0.0%"
+
+    elif any(
+        token in unit_text
+        for token in [
+            "eur",
+            "usd",
+            "gbp",
+            "chf",
+            "jpy",
+        ]
+    ):
+        cell.number_format = "#,##0.00"
+
+    else:
+        cell.number_format = "#,##0.00"
+
+
+# ============================================================
+# Create Financial KPIs worksheet
+# ============================================================
+
+def create_financial_kpis_sheet(
+    workbook,
+    result_df,
+):
+    """
+    Create the main financial-report-style worksheet.
+
+    Layout:
+
+        Metric | Dimensions | FX Basis | UoM | 2026-08 – MTH | ...
+                                                   Actual
+                                                   Actual LY
+                                                   Budget
+                                                   Forecast
+    """
+
+    worksheet = workbook.create_sheet(
+        "Financial KPIs"
+    )
+
+    matrix_df, column_records = (
+        build_financial_matrix(result_df)
+    )
+
+    # --------------------------------------------------------
+    # Workbook styles
+    # --------------------------------------------------------
+
+    title_font = Font(
+        bold=True,
+        size=16,
+    )
+
+    metadata_label_font = Font(
+        bold=True,
+        size=10,
+    )
+
+    metadata_value_font = Font(
+        size=10,
+    )
+
+    header_font = Font(
+        bold=True,
+        size=10,
+    )
+
+    metric_font = Font(
+        bold=True,
+        size=10,
+    )
+
+    thin_gray = Side(
+        style="thin",
+        color="D9D9D9",
+    )
+
+    medium_gray = Side(
+        style="medium",
+        color="A6A6A6",
+    )
+
+    border = Border(
+        bottom=thin_gray,
+    )
+
+    header_border = Border(
+        top=medium_gray,
+        bottom=medium_gray,
+    )
+
+    period_fill = PatternFill(
+        fill_type="solid",
+        fgColor="D9EAF7",
+    )
+
+    measure_fill = PatternFill(
+        fill_type="solid",
+        fgColor="EAF2F8",
+    )
+
+    # --------------------------------------------------------
+    # Determine metadata
+    # --------------------------------------------------------
+
+    metadata_row = (
+        result_df.iloc[0]
+        if not result_df.empty
+        else {}
+    )
+
+    company = (
+        metadata_row.get("company")
+        if hasattr(
+            metadata_row,
+            "get",
+        )
+        else None
+    )
+
+    holding = (
+        metadata_row.get("holding")
+        if hasattr(
+            metadata_row,
+            "get",
+        )
+        else None
+    )
+
+    reporting_period = (
+        metadata_row.get(
+            "reporting_period"
+        )
+        if hasattr(
+            metadata_row,
+            "get",
+        )
+        else None
+    )
+
+    # --------------------------------------------------------
+    # Title
+    # --------------------------------------------------------
+
+    worksheet.merge_cells(
+        start_row=1,
+        start_column=1,
+        end_row=1,
+        end_column=max(
+            4 + len(column_records),
+            4,
+        ),
+    )
+
+    title_cell = worksheet.cell(
+        row=1,
+        column=1,
+        value="Financial KPIs",
+    )
+
+    title_cell.font = title_font
+    title_cell.alignment = Alignment(
+        horizontal="left",
+        vertical="center",
+    )
+
+    worksheet.row_dimensions[1].height = 24
+
+    # --------------------------------------------------------
+    # Metadata
+    # --------------------------------------------------------
+
+    metadata_items = []
+
+    if not is_missing(company) and str(
+        company
+    ).strip():
+        metadata_items.append(
+            ("Company", company)
+        )
+
+    if not is_missing(holding) and str(
+        holding
+    ).strip():
+        metadata_items.append(
+            ("Holding", holding)
+        )
+
+    if (
+        not is_missing(reporting_period)
+        and str(reporting_period).strip()
+    ):
+        metadata_items.append(
+            (
+                "Reporting Period",
+                reporting_period,
+            )
+        )
+
+    metadata_row_number = 3
+
+    for label, value in metadata_items:
+
+        worksheet.cell(
+            row=metadata_row_number,
+            column=1,
+            value=label,
+        ).font = metadata_label_font
+
+        worksheet.cell(
+            row=metadata_row_number,
+            column=2,
+            value=value,
+        ).font = metadata_value_font
+
+        metadata_row_number += 1
+
+    # Leave one blank row before matrix
+    header_start_row = (
+        metadata_row_number + 1
+    )
+
+    # --------------------------------------------------------
+    # Main table headers
+    # --------------------------------------------------------
+
+    static_headers = [
+        "Metric",
+        "Dimensions",
+        "FX Basis",
+        "UoM",
+    ]
+
+    for column_index, header_name in enumerate(
+        static_headers,
+        start=1,
+    ):
+
+        worksheet.cell(
+            row=header_start_row,
+            column=column_index,
+            value=header_name,
+        )
+
+        worksheet.merge_cells(
+            start_row=header_start_row,
+            start_column=column_index,
+            end_row=header_start_row + 1,
+            end_column=column_index,
+        )
+
+        cell = worksheet.cell(
+            row=header_start_row,
+            column=column_index,
+        )
+
+        cell.font = header_font
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+            wrap_text=True,
+        )
+
+        cell.fill = period_fill
+        cell.border = header_border
+
+    # --------------------------------------------------------
+    # Identify period groups
+    # --------------------------------------------------------
+
+    period_groups = []
+
+    group_start = 5
+
+    previous_group = None
+
+    for index, column in enumerate(
+        column_records
+    ):
+
+        group = (
+            column["period"],
+            column["period_type"],
+        )
+
+        excel_column = 5 + index
+
+        if previous_group is None:
+
+            previous_group = group
+            group_start = excel_column
+
+        elif group != previous_group:
+
+            period_groups.append(
+                (
+                    previous_group,
+                    group_start,
+                    excel_column - 1,
+                )
+            )
+
+            previous_group = group
+            group_start = excel_column
+
+    if previous_group is not None:
+
+        period_groups.append(
+            (
+                previous_group,
+                group_start,
+                4 + len(column_records),
+            )
+        )
+
+    # --------------------------------------------------------
+    # Write period groups
+    # --------------------------------------------------------
+
+    for (
+        group,
+        start_column,
+        end_column,
+    ) in period_groups:
+
+        period, period_type = group
+
+        worksheet.merge_cells(
+            start_row=header_start_row,
+            start_column=start_column,
+            end_row=header_start_row,
+            end_column=end_column,
+        )
+
+        cell = worksheet.cell(
+            row=header_start_row,
+            column=start_column,
+            value=format_period_header(
+                period,
+                period_type,
+            ),
+        )
+
+        cell.font = header_font
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+        )
+        cell.fill = period_fill
+        cell.border = header_border
+
+        # Apply border/fill to merged cells
+        for column in range(
+            start_column,
+            end_column + 1,
+        ):
+
+            worksheet.cell(
+                row=header_start_row,
+                column=column,
+            ).fill = period_fill
+
+            worksheet.cell(
+                row=header_start_row,
+                column=column,
+            ).border = header_border
+
+    # --------------------------------------------------------
+    # Measure headers
+    # --------------------------------------------------------
+
+    for index, column in enumerate(
+        column_records
+    ):
+
+        excel_column = 5 + index
+
+        cell = worksheet.cell(
+            row=header_start_row + 1,
+            column=excel_column,
+            value=format_measure_label(
+                column["measure"]
+            ),
+        )
+
+        cell.font = header_font
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+        )
+        cell.fill = measure_fill
+        cell.border = header_border
+
+    worksheet.row_dimensions[
+        header_start_row
+    ].height = 22
+
+    worksheet.row_dimensions[
+        header_start_row + 1
+    ].height = 22
+
+    # --------------------------------------------------------
+    # Write matrix values
+    # --------------------------------------------------------
+
+    data_start_row = (
+        header_start_row + 2
+    )
+
+    for row_index, (_, row) in enumerate(
+        matrix_df.iterrows()
+    ):
+
+        excel_row = (
+            data_start_row + row_index
+        )
+
+        # Static row identifiers
+        metric_cell = worksheet.cell(
+            row=excel_row,
+            column=1,
+            value=row["Metric"],
+        )
+
+        metric_cell.font = metric_font
+        metric_cell.alignment = Alignment(
+            vertical="center",
+        )
+
+        dimensions_cell = worksheet.cell(
+            row=excel_row,
+            column=2,
+            value=row["Dimensions"],
+        )
+
+        dimensions_cell.alignment = Alignment(
+            vertical="center",
+            wrap_text=True,
+        )
+
+        fx_basis_cell = worksheet.cell(
+            row=excel_row,
+            column=3,
+            value=row["FX Basis"],
+        )
+
+        fx_basis_cell.alignment = Alignment(
+            vertical="center",
+            wrap_text=True,
+        )
+
+        uom_cell = worksheet.cell(
+            row=excel_row,
+            column=4,
+            value=row["UoM"],
+        )
+
+        uom_cell.alignment = Alignment(
+            vertical="center",
+        )
+
+        # Financial values
+        for index, column in enumerate(
+            column_records
+        ):
+
+            excel_column = 5 + index
+
+            key = (
+                column["period"],
+                column["period_type"],
+                column["measure"],
+            )
+
+            value = row.get(key)
+
+            cell = worksheet.cell(
+                row=excel_row,
+                column=excel_column,
+                value=value,
+            )
+
+            cell.alignment = Alignment(
+                horizontal="right",
+                vertical="center",
+            )
+
+            apply_value_number_format(
+                cell,
+                unit=row["UoM"],
+                value=value,
+            )
+
+        # Bottom border
+        for column in range(
+            1,
+            5 + len(column_records),
+        ):
+
+            worksheet.cell(
+                row=excel_row,
+                column=column,
+            ).border = border
+
+    # --------------------------------------------------------
+    # Freeze panes
+    # --------------------------------------------------------
+
+    worksheet.freeze_panes = (
+        f"E{data_start_row}"
+    )
+
+    # --------------------------------------------------------
+    # Autofilter
+    # --------------------------------------------------------
+
+    if not matrix_df.empty:
+
+        worksheet.auto_filter.ref = (
+            f"A{header_start_row}:"
+            f"{get_column_letter(4 + len(column_records))}"
+            f"{data_start_row + len(matrix_df) - 1}"
+        )
+
+    # --------------------------------------------------------
+    # Column widths
+    # --------------------------------------------------------
+
+    worksheet.column_dimensions[
+        "A"
+    ].width = 28
+
+    worksheet.column_dimensions[
+        "B"
+    ].width = 32
+
+    worksheet.column_dimensions[
+        "C"
+    ].width = 18
+
+    worksheet.column_dimensions[
+        "D"
+    ].width = 14
+
+    for column in range(
+        5,
+        5 + len(column_records),
+    ):
+
+        worksheet.column_dimensions[
+            get_column_letter(column)
+        ].width = 15
+
+    # --------------------------------------------------------
+    # Page layout
+    # --------------------------------------------------------
+
+    worksheet.sheet_view.showGridLines = False
+
+    worksheet.page_setup.orientation = (
+        "landscape"
+    )
+
+    worksheet.page_setup.fitToWidth = 1
+    worksheet.page_setup.fitToHeight = 0
+
+    worksheet.sheet_properties.pageSetUpPr.fitToPage = True
+
+    worksheet.print_title_rows = (
+        f"{header_start_row}:{header_start_row + 1}"
+    )
+
+    return worksheet
+
+
+# ============================================================
+# Create KPI Detail worksheet
+# ============================================================
+
+def create_kpi_detail_sheet(
+    workbook,
+    result_df,
+):
+    """
+    Create normalized observation-level detail sheet.
+
+    This preserves the underlying extracted information and
+    provides source traceability.
+    """
+
+    worksheet = workbook.create_sheet(
+        "KPI Detail"
+    )
+
+    columns = [
+        "Source Document",
+        "Page",
+        "Company",
+        "Holding",
+        "Reporting Period",
+        "Metric",
+        "Dimensions",
+        "Period",
+        "Period Type",
+        "Measure",
+        "Value",
+        "UoM",
+        "Currency",
+        "FX Basis",
+    ]
+
+    header_fill = PatternFill(
+        fill_type="solid",
+        fgColor="D9EAF7",
+    )
+
+    header_font = Font(
+        bold=True,
+    )
+
+    thin = Side(
+        style="thin",
+        color="D9D9D9",
+    )
+
+    for column_index, column_name in enumerate(
+        columns,
+        start=1,
+    ):
+
+        cell = worksheet.cell(
+            row=1,
+            column=column_index,
+            value=column_name,
+        )
+
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+            wrap_text=True,
+        )
+
+        cell.border = Border(
+            bottom=thin,
+        )
+
+    if result_df.empty:
+        return worksheet
+
+    for row_index, (_, row) in enumerate(
+        result_df.iterrows(),
+        start=2,
+    ):
+
+        values = [
+            row.get("source_document"),
+            row.get("page_number"),
+            row.get("company"),
+            row.get("holding"),
+            row.get("reporting_period"),
+            row.get("kpi"),
+            format_dimensions(
+                row.get("dimensions")
+            ),
+            row.get("period"),
+            row.get("period_type"),
+            format_measure_label(
+                row.get("measure")
+            ),
+            row.get("value"),
+            row.get("unit"),
+            row.get("currency"),
+            row.get("fx_basis"),
+        ]
+
+        for column_index, value in enumerate(
+            values,
+            start=1,
+        ):
+
+            if is_missing(value):
+                value = None
+
+            cell = worksheet.cell(
+                row=row_index,
+                column=column_index,
+                value=value,
+            )
+
+            cell.alignment = Alignment(
+                vertical="center",
+                wrap_text=True,
+            )
+
+            if column_index == 11:
+                apply_value_number_format(
+                    cell,
+                    unit=row.get("unit"),
+                    value=value,
+                )
+
+    # Freeze
+    worksheet.freeze_panes = "A2"
+
+    # Filter
+    worksheet.auto_filter.ref = (
+        f"A1:{get_column_letter(len(columns))}"
+        f"{len(result_df) + 1}"
+    )
+
+    # Widths
+    widths = {
+        "A": 32,
+        "B": 10,
+        "C": 25,
+        "D": 25,
+        "E": 20,
+        "F": 30,
+        "G": 35,
+        "H": 15,
+        "I": 15,
+        "J": 15,
+        "K": 18,
+        "L": 14,
+        "M": 14,
+        "N": 18,
+    }
+
+    for column, width in widths.items():
+        worksheet.column_dimensions[
+            column
+        ].width = width
+
+    worksheet.sheet_view.showGridLines = False
+
+    return worksheet
+
+
+# ============================================================
+# Create Source Notes worksheet
+# ============================================================
+
+def create_source_notes_sheet(
+    workbook,
+    result_df,
+):
+    """
+    Create a compact source/audit worksheet.
+    """
+
+    worksheet = workbook.create_sheet(
+        "Source Notes"
+    )
+
+    columns = [
+        "Source Document",
+        "Page",
+        "Metric",
+        "Dimensions",
+        "Period",
+        "Period Type",
+        "Measure",
+        "Value",
+        "UoM",
+        "Currency",
+        "FX Basis",
+    ]
+
+    header_fill = PatternFill(
+        fill_type="solid",
+        fgColor="D9EAF7",
+    )
+
+    header_font = Font(
+        bold=True,
+    )
+
+    for column_index, column_name in enumerate(
+        columns,
+        start=1,
+    ):
+
+        cell = worksheet.cell(
+            row=1,
+            column=column_index,
+            value=column_name,
+        )
+
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+        )
+
+    if result_df.empty:
+        return worksheet
+
+    for row_index, (_, row) in enumerate(
+        result_df.iterrows(),
+        start=2,
+    ):
+
+        values = [
+            row.get("source_document"),
+            row.get("page_number"),
+            row.get("kpi"),
+            format_dimensions(
+                row.get("dimensions")
+            ),
+            row.get("period"),
+            row.get("period_type"),
+            format_measure_label(
+                row.get("measure")
+            ),
+            row.get("value"),
+            row.get("unit"),
+            row.get("currency"),
+            row.get("fx_basis"),
+        ]
+
+        for column_index, value in enumerate(
+            values,
+            start=1,
+        ):
+
+            if is_missing(value):
+                value = None
+
+            cell = worksheet.cell(
+                row=row_index,
+                column=column_index,
+                value=value,
+            )
+
+            cell.alignment = Alignment(
+                vertical="center",
+                wrap_text=True,
+            )
+
+            if column_index == 8:
+                apply_value_number_format(
+                    cell,
+                    unit=row.get("unit"),
+                    value=value,
+                )
+
+    worksheet.freeze_panes = "A2"
+
+    worksheet.auto_filter.ref = (
+        f"A1:{get_column_letter(len(columns))}"
+        f"{len(result_df) + 1}"
+    )
+
+    widths = {
+        "A": 32,
+        "B": 10,
+        "C": 30,
+        "D": 35,
+        "E": 15,
+        "F": 15,
+        "G": 15,
+        "H": 18,
+        "I": 14,
+        "J": 14,
+        "K": 18,
+    }
+
+    for column, width in widths.items():
+        worksheet.column_dimensions[
+            column
+        ].width = width
+
+    worksheet.sheet_view.showGridLines = False
+
+    return worksheet
+
+
+# ============================================================
+# Build Excel workbook
+# ============================================================
+
+def create_excel_workbook(result_df):
+    """
+    Create the complete financial reporting workbook.
+
+    Sheets:
+        1. Financial KPIs
+        2. KPI Detail
+        3. Source Notes
+    """
+
+    workbook = Workbook()
+
+    # Remove default sheet
+    default_sheet = workbook.active
+    workbook.remove(default_sheet)
+
+    # Main financial presentation
+    create_financial_kpis_sheet(
+        workbook,
+        result_df,
+    )
+
+    # Full normalized detail
+    create_kpi_detail_sheet(
+        workbook,
+        result_df,
+    )
+
+    # Source/audit view
+    create_source_notes_sheet(
+        workbook,
+        result_df,
+    )
+
+    # Make Financial KPIs the active sheet
+    workbook.active = (
+        workbook.sheetnames.index(
+            "Financial KPIs"
+        )
+    )
+
+    # Save to memory
+    output = BytesIO()
+
+    workbook.save(output)
+
+    output.seek(0)
+
+    return output.getvalue()
+
+
+# ============================================================
+# Streamlit page
 # ============================================================
 
 st.set_page_config(
@@ -926,13 +2208,9 @@ if uploaded_files:
             "Modal-Secret": MODAL_SECRET,
         }
 
-        total_files = len(
-            uploaded_files
-        )
+        total_files = len(uploaded_files)
 
-        progress = st.progress(
-            0
-        )
+        progress = st.progress(0)
 
         status_text = st.empty()
 
@@ -961,7 +2239,6 @@ if uploaded_files:
                 ):
 
                     if index > 0:
-
                         time.sleep(
                             REQUEST_START_DELAY_SECONDS
                         )
@@ -1086,7 +2363,7 @@ if uploaded_files:
             )
 
             # ------------------------------------------------
-            # Validate response structure
+            # Validate response
             # ------------------------------------------------
 
             if not isinstance(
@@ -1109,13 +2386,27 @@ if uploaded_files:
             # Count extractions
             # ------------------------------------------------
 
-            extractions = response_data.get(
-                "extractions"
-            ) or []
-
-            total_extractions += len(
-                extractions
+            extractions = (
+                response_data.get(
+                    "extractions"
+                )
+                or []
             )
+
+            # For direct kpis response there may not be
+            # an "extractions" wrapper.
+            if extractions:
+
+                total_extractions += len(
+                    extractions
+                )
+
+            elif isinstance(
+                response_data.get("kpis"),
+                list,
+            ):
+
+                total_extractions += 1
 
             # ------------------------------------------------
             # KPI observations
@@ -1231,15 +2522,10 @@ if uploaded_files:
                     "but no KPI observations were found."
                 )
 
-                # --------------------------------------------
-                # Show useful diagnostic information
-                # --------------------------------------------
-
                 if total_extractions == 0:
 
                     st.info(
-                        "The API returned no items in "
-                        "`extractions`."
+                        "The API returned no extraction items."
                     )
 
                 else:
@@ -1322,9 +2608,7 @@ if "result_df" in st.session_state:
     # Summary
     # ========================================================
 
-    col1, col2, col3 = st.columns(
-        3
-    )
+    col1, col2, col3 = st.columns(3)
 
     with col1:
 
@@ -1352,7 +2636,71 @@ if "result_df" in st.session_state:
         )
 
     # ========================================================
-    # Downloads
+    # Financial Preview
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "Financial KPI Preview"
+    )
+
+    st.caption(
+        "KPIs are presented as rows, with dimensions, FX Basis "
+        "and UoM as row identifiers. Period and period type are "
+        "grouped above Actual, Actual LY, Budget and Forecast."
+    )
+
+    matrix_df, column_records = (
+        build_financial_matrix(
+            result_df
+        )
+    )
+
+    if not matrix_df.empty:
+
+        # Convert tuple columns into readable display columns
+        preview_df = matrix_df.copy()
+
+        renamed_columns = {}
+
+        for column in preview_df.columns:
+
+            if isinstance(
+                column,
+                tuple,
+            ):
+
+                period = column[0]
+                period_type = column[1]
+                measure = column[2]
+
+                renamed_columns[
+                    column
+                ] = (
+                    f"{period} – "
+                    f"{period_type} – "
+                    f"{format_measure_label(measure)}"
+                )
+
+        preview_df = preview_df.rename(
+            columns=renamed_columns
+        )
+
+        st.dataframe(
+            preview_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    else:
+
+        st.warning(
+            "No valid financial observations found."
+        )
+
+    # ========================================================
+    # Excel Export
     # ========================================================
 
     st.divider()
@@ -1361,525 +2709,102 @@ if "result_df" in st.session_state:
         "Export"
     )
 
-    # ========================================================
-    # Excel
-    # ========================================================
-
-    excel_path = (
-        "kpi_observations.xlsx"
+    st.write(
+        "The Excel workbook contains a financial-report-style "
+        "matrix including FX Basis, plus the underlying KPI "
+        "detail and source traceability."
     )
 
-    with pd.ExcelWriter(
-        excel_path,
-        engine="openpyxl",
-    ) as writer:
+    try:
 
-        from openpyxl.styles import (
-            Alignment,
-            Font,
-            PatternFill,
+        excel_data = create_excel_workbook(
+            result_df
         )
 
-        from openpyxl.utils import (
-            get_column_letter,
+        st.download_button(
+            label=(
+                "⬇️ Download Financial KPI Excel"
+            ),
+            data=excel_data,
+            file_name=(
+                "financial_kpis.xlsx"
+            ),
+            mime=(
+                "application/vnd.openxmlformats-"
+                "officedocument.spreadsheetml.sheet"
+            ),
+            type="primary",
+            use_container_width=True,
         )
 
-        workbook = writer.book
+    except Exception as e:
 
-        # ----------------------------------------------------
-        # Create worksheet
-        # ----------------------------------------------------
-
-        worksheet = workbook.create_sheet(
-            "KPI Observations"
+        st.error(
+            f"Could not create Excel export: {e}"
         )
-
-        current_row = 1
-
-        # ====================================================
-        # Source groups
-        # ====================================================
-
-        source_groups = result_df.groupby(
-            "source",
-            sort=False,
-            dropna=False,
-        )
-
-        for source, source_df in source_groups:
-
-            source_name = (
-                str(source)
-                if pd.notna(source)
-                else "Unknown source"
-            )
-
-            # ------------------------------------------------
-            # Source heading
-            # ------------------------------------------------
-
-            worksheet.cell(
-                current_row,
-                1,
-                f"📄 {source_name} "
-                f"({len(source_df)} observations)",
-            )
-
-            worksheet.cell(
-                current_row,
-                1,
-            ).font = Font(
-                bold=True,
-                size=14,
-            )
-
-            current_row += 1
-
-            # ------------------------------------------------
-            # Document metadata
-            # ------------------------------------------------
-
-            metadata_row = source_df.iloc[0]
-
-            metadata = [
-                (
-                    "Company",
-                    metadata_row.get(
-                        "company"
-                    ),
-                ),
-                (
-                    "Holding",
-                    metadata_row.get(
-                        "holding"
-                    ),
-                ),
-                (
-                    "Reporting Period",
-                    metadata_row.get(
-                        "reporting_period"
-                    ),
-                ),
-            ]
-
-            for label, value in metadata:
-
-                if (
-                    value is not None
-                    and pd.notna(value)
-                    and str(value).strip()
-                ):
-
-                    worksheet.cell(
-                        current_row,
-                        1,
-                        label,
-                    ).font = Font(
-                        bold=True
-                    )
-
-                    worksheet.cell(
-                        current_row,
-                        2,
-                        value,
-                    )
-
-                    current_row += 1
-
-            current_row += 1
-
-            # =================================================
-            # PAGE GROUPS
-            # =================================================
-
-            page_groups = source_df.groupby(
-                "page_number",
-                sort=False,
-                dropna=False,
-            )
-
-            for page_number, page_df in page_groups:
-
-                if (
-                    pd.isna(page_number)
-                    or page_number is None
-                ):
-
-                    page_name = "Page Unknown"
-
-                else:
-
-                    page_name = (
-                        f"Page {page_number}"
-                    )
-
-                # ------------------------------------------------
-                # Page heading
-                # ------------------------------------------------
-
-                worksheet.cell(
-                    current_row,
-                    1,
-                    f"📑 {page_name}",
-                )
-
-                worksheet.cell(
-                    current_row,
-                    1,
-                ).font = Font(
-                    bold=True,
-                    size=12,
-                )
-
-                current_row += 1
-
-                # =================================================
-                # KPI groups
-                # =================================================
-
-                kpi_groups = page_df.groupby(
-                    "kpi",
-                    sort=False,
-                    dropna=False,
-                )
-
-                for kpi, kpi_df in kpi_groups:
-
-                    kpi_name = (
-                        str(kpi)
-                        if pd.notna(kpi)
-                        else "Unnamed KPI"
-                    )
-
-                    observation_count = len(
-                        kpi_df
-                    )
-
-                    # ------------------------------------------------
-                    # KPI heading
-                    # ------------------------------------------------
-
-                    worksheet.cell(
-                        current_row,
-                        1,
-                        f"{kpi_name} "
-                        f"({observation_count} observations)",
-                    )
-
-                    worksheet.cell(
-                        current_row,
-                        1,
-                    ).font = Font(
-                        bold=True,
-                        size=11,
-                    )
-
-                    current_row += 1
-
-                    # =================================================
-                    # Measure groups
-                    # =================================================
-
-                    measure_groups = kpi_df.groupby(
-                        "measure",
-                        sort=False,
-                        dropna=False,
-                    )
-
-                    for measure, measure_df in measure_groups:
-
-                        measure_name = (
-                            str(measure)
-                            if pd.notna(measure)
-                            else "Unknown"
-                        )
-
-                        # ------------------------------------------------
-                        # Measure heading
-                        # ------------------------------------------------
-
-                        worksheet.cell(
-                            current_row,
-                            1,
-                            f"Measure: {measure_name}",
-                        )
-
-                        worksheet.cell(
-                            current_row,
-                            1,
-                        ).font = Font(
-                            bold=True,
-                            italic=True,
-                        )
-
-                        current_row += 1
-
-                        # ------------------------------------------------
-                        # Headers
-                        # ------------------------------------------------
-
-                        headers = [
-                            "Source Document",
-                            "Page",
-                            "Period",
-                            "Period Type",
-                            "Value",
-                            "Currency",
-                            "Unit",
-                            "FX Basis",
-                            "Tags",
-                        ]
-
-                        # -------------------------------------------------
-                        # Write headers
-                        # -------------------------------------------------
-
-                        for col, header in enumerate(
-                            headers,
-                            start=1,
-                        ):
-
-                            cell = worksheet.cell(
-                                current_row,
-                                col,
-                                header,
-                            )
-
-                            cell.font = Font(
-                                bold=True
-                            )
-
-                            cell.fill = PatternFill(
-                                fill_type="solid",
-                                fgColor="D9EAF7",
-                            )
-
-                            cell.alignment = Alignment(
-                                horizontal="center"
-                            )
-
-                        current_row += 1
-
-                        # =================================================
-                        # Write observations
-                        # =================================================
-
-                        for _, row in measure_df.iterrows():
-
-                            tags_value = format_tags(
-                                row.get("tags")
-                            )
-
-                            currency = row.get(
-                                "currency"
-                            )
-
-                            unit = row.get(
-                                "unit"
-                            )
-
-                            fx_basis = row.get(
-                                "fx_basis"
-                            )
-
-                            source_document = row.get(
-                                "source_document"
-                            )
-
-                            page_number = row.get(
-                                "page_number"
-                            )
-
-                            values = [
-                                (
-                                    source_document
-                                    if pd.notna(
-                                        source_document
-                                    )
-                                    and source_document is not None
-                                    else "—"
-                                ),
-
-                                (
-                                    page_number
-                                    if pd.notna(
-                                        page_number
-                                    )
-                                    and page_number is not None
-                                    else "—"
-                                ),
-
-                                row.get(
-                                    "period"
-                                ),
-
-                                row.get(
-                                    "period_type"
-                                ),
-
-                                row.get(
-                                    "value"
-                                ),
-
-                                (
-                                    currency
-                                    if pd.notna(
-                                        currency
-                                    )
-                                    else "—"
-                                ),
-
-                                (
-                                    unit
-                                    if pd.notna(
-                                        unit
-                                    )
-                                    else "—"
-                                ),
-
-                                # NEW: FX Basis
-                                (
-                                    fx_basis
-                                    if pd.notna(
-                                        fx_basis
-                                    )
-                                    and fx_basis is not None
-                                    else "—"
-                                ),
-
-                                tags_value,
-                            ]
-
-                            for col, value in enumerate(
-                                values,
-                                start=1,
-                            ):
-
-                                if value is not None:
-
-                                    try:
-
-                                        if pd.isna(
-                                            value
-                                        ):
-
-                                            value = None
-
-                                    except (
-                                        TypeError,
-                                        ValueError,
-                                    ):
-
-                                        pass
-
-                                worksheet.cell(
-                                    current_row,
-                                    col,
-                                    value,
-                                )
-
-                            current_row += 1
-
-                        current_row += 1
-
-                    current_row += 1
-
-                current_row += 1
-
-            current_row += 1
-
-        # ========================================================
-        # Excel formatting
-        # ========================================================
-
-        for column_cells in worksheet.iter_cols():
-
-            max_length = 0
-
-            for cell in column_cells:
-
-                if cell.value is not None:
-
-                    value_length = len(
-                        str(
-                            cell.value
-                        )
-                    )
-
-                    max_length = max(
-                        max_length,
-                        value_length,
-                    )
-
-            column_index = (
-                column_cells[0].column
-            )
-
-            width = max(
-                12,
-                min(
-                    60,
-                    max_length + 2,
-                ),
-            )
-
-            worksheet.column_dimensions[
-                get_column_letter(
-                    column_index
-                )
-            ].width = width
-
-        # Tags column moved from H to I
-        worksheet.column_dimensions[
-            "I"
-        ].width = 45
-
-        # Give FX Basis a reasonable width
-        worksheet.column_dimensions[
-            "H"
-        ].width = 20
-
-        worksheet.freeze_panes = "A1"
 
     # ========================================================
-    # Download Excel
+    # Detailed observations
     # ========================================================
 
-    with open(
-        excel_path,
-        "rb",
-    ) as f:
+    st.divider()
 
-        excel_data = f.read()
-
-    st.download_button(
-        label=(
-            "⬇️ Download observations Excel"
-        ),
-        data=excel_data,
-        file_name=(
-            "kpi_observations.xlsx"
-        ),
-        mime=(
-            "application/vnd.openxmlformats-"
-            "officedocument.spreadsheetml.sheet"
-        ),
+    st.subheader(
+        "KPI Detail"
     )
 
-    # ========================================================
-    # KPI-centric grouped view
-    # ========================================================
+    detail_preview = result_df.copy()
 
-    st.header(
-        "KPI Observations"
+    if "dimensions" in detail_preview.columns:
+
+        detail_preview[
+            "dimensions"
+        ] = detail_preview[
+            "dimensions"
+        ].apply(format_dimensions)
+
+    display_columns = [
+        "source_document",
+        "page_number",
+        "kpi",
+        "dimensions",
+        "fx_basis",
+        "period",
+        "period_type",
+        "measure",
+        "value",
+        "unit",
+        "currency",
+    ]
+
+    available_columns = [
+        column
+        for column in display_columns
+        if column in detail_preview.columns
+    ]
+
+    detail_preview = detail_preview[
+        available_columns
+    ].copy()
+
+    detail_preview = detail_preview.rename(
+        columns={
+            "source_document": "Source Document",
+            "page_number": "Page",
+            "kpi": "Metric",
+            "dimensions": "Dimensions",
+            "fx_basis": "FX Basis",
+            "period": "Period",
+            "period_type": "Period Type",
+            "measure": "Measure",
+            "value": "Value",
+            "unit": "UoM",
+            "currency": "Currency",
+        }
     )
 
-    st.caption(
-        "Observations are grouped by source document, "
-        "then page, KPI, and measure. Each observation "
-        "includes its source document, page number, and FX basis."
-    )
-
-    display_kpi_view(
-        result_df
+    st.dataframe(
+        detail_preview,
+        use_container_width=True,
+        hide_index=True,
     )

@@ -25,6 +25,7 @@ from app.core.logger import get_logger
 
 logger = get_logger(__name__)
 
+
 # Open vocabularies, deliberately typed as plain `str` rather than `Literal`.
 # The schema is what vLLM's guided decoding enforces, so a `Literal` here would
 # make the listed values the only ones the model can physically emit -- reports
@@ -35,6 +36,7 @@ Measure = str
 
 PERIOD_TYPES = ("MTH", "QTR", "YTD", "FY")
 MEASURES = ("actual", "actual_cc", "forecast", "forecast_delta")
+
 
 # Collapse the spellings the model reaches for onto one canonical value, so a
 # metric is not split across "budget" and "forecast" downstream.
@@ -64,9 +66,8 @@ _PERIOD_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 # for FY, model generates only year
 _YEAR_PATTERN = re.compile(r"^\d{4}$")
 
-
 def _validated_period(value: str | None) -> str | None:
-    """Return `value` if it is a "YYYY-MM" month, else raise."""
+    """Return `value` if it is a YYYY-MM month or YYYY year, else raise."""
     if value is not None and not (
         _PERIOD_PATTERN.match(value) or _YEAR_PATTERN.match(value)
     ):
@@ -114,20 +115,18 @@ class Observation(_Strict):
     value: float | None
     unit: str | None
     currency: str | None
-    dimensions: list[str] | None
+    dimensions: list[str] | None = []
 
     # @field_validator("period")
     # @classmethod
     # def _check_period(cls, value: str) -> str:
     #     return _validated_period(value)  # type: ignore[return-value]
-
     # @field_validator("period_type")
     # @classmethod
     # def _normalise_period_type(cls, value: str) -> str:
     #     """Canonicalise a known span label, upper-casing an unknown one."""
     #     key = _vocabulary_key("period_type", value)
     #     return _PERIOD_TYPE_SYNONYMS.get(key, key.upper())
-
     # @field_validator("measure")
     # @classmethod
     # def _normalise_measure(cls, value: str) -> str:
@@ -151,13 +150,13 @@ class Kpi(_Strict):
         result = []
 
         def flatten(items):
-            logger.info("Flattening %d observations", len(items))
             for item in items:
                 if (
                     isinstance(item, dict)
                     and "observations" in item
                     and "period" not in item
                 ):
+                    logger.info("Flattening %d observations", len(items))
                     flatten(item["observations"])
                 else:
                     result.append(item)
