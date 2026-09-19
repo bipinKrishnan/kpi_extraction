@@ -2,16 +2,22 @@ import subprocess
 
 import modal
 
+
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .uv_sync(frozen=True)
+    .add_local_dir(
+            "src/frontend/xlsx",
+            "/root/xlsx",
+            copy=True,
+    )
     .add_local_file(
         "src/frontend/web_app.py",
         "/root/web_app.py",
     )
 )
 
-app = modal.App("veroport", image=image)
+app = modal.App("vereport", image=image)
 
 
 @app.function(
@@ -29,7 +35,7 @@ app = modal.App("veroport", image=image)
     8501,
     startup_timeout=120,
 )
-def veroport():
+def vereport():
 
     subprocess.Popen(
         [
