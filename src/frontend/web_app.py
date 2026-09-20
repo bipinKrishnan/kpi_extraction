@@ -509,6 +509,7 @@ def inject_apple_theme():
             border-color 160ms ease !important;
 
         box-shadow: none !important;
+        cursor: pointer !important;
     }
 
     .stButton > button:hover,
@@ -521,6 +522,18 @@ def inject_apple_theme():
 
         transform:
             translateY(-1px);
+    }
+
+    .stButton > button:active,
+    .stDownloadButton > button:active {
+        background:
+            #2e2e31 !important;
+
+        transform:
+            translateY(1px) scale(0.98);
+
+        transition-duration:
+            60ms;
     }
 
     button[kind="primary"],
@@ -555,6 +568,26 @@ def inject_apple_theme():
 
         box-shadow:
             0 8px 22px rgba(0,113,227,0.30) !important;
+    }
+
+    button[kind="primary"]:active,
+    .stButton > button[kind="primary"]:active,
+    .stDownloadButton > button[kind="primary"]:active {
+        background:
+            linear-gradient(
+                180deg,
+                #2490f4,
+                #0067d1
+            ) !important;
+
+        transform:
+            translateY(1px) scale(0.98);
+
+        box-shadow:
+            0 3px 10px rgba(0,113,227,0.22) !important;
+
+        transition-duration:
+            60ms;
     }
 
 
@@ -1125,6 +1158,18 @@ def inject_apple_theme():
             var(--vp-border-strong) !important;
     }
 
+    .stButton > button:active,
+    .stDownloadButton > button:active {
+        background:
+            #e8e8ed !important;
+
+        transform:
+            translateY(1px) scale(0.98);
+
+        transition-duration:
+            60ms;
+    }
+
     button[kind="primary"],
     .stButton > button[kind="primary"],
     .stDownloadButton > button[kind="primary"] {
@@ -1143,6 +1188,26 @@ def inject_apple_theme():
 
         box-shadow:
             0 6px 18px rgba(0,113,227,0.18) !important;
+    }
+
+    button[kind="primary"]:active,
+    .stButton > button[kind="primary"]:active,
+    .stDownloadButton > button[kind="primary"]:active {
+        background:
+            linear-gradient(
+                180deg,
+                #1272cf,
+                #0062c4
+            ) !important;
+
+        transform:
+            translateY(1px) scale(0.98);
+
+        box-shadow:
+            0 2px 8px rgba(0,113,227,0.18) !important;
+
+        transition-duration:
+            60ms;
     }
 
     .stTextInput input,
