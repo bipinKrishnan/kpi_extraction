@@ -2388,6 +2388,12 @@ def build_financial_matrix(df):
                 value = None
             else:
                 value = match.iloc[0]["value"]
+                if (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and value == 0
+                ):
+                    value = None
 
             row[
                 (
@@ -3746,6 +3752,13 @@ def get_financial_matrix_from_workbook(
                 value = row_values[
                     record["column_index"] - 1
                 ]
+
+                if (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and value == 0
+                ):
+                    value = None
 
                 row[
                     (
