@@ -26,7 +26,9 @@ Extract a metric only if the page shows a labeled figure for it. If a metric is 
    Recognize under: EBITDA (Reported), Statutory EBITDA, EBITDA as reported. Keep separate from Adjusted EBITDA even if only one of the two appears — never fill in the other by inference.
 
 6. "Sales"
-   Only extract as a metric distinct from Revenue when the page itself prints BOTH a "Revenue" line and a separately labeled "Sales" line with different values. If the page uses only one of the two labels for its top-line figure (e.g. only "Sales", or only "Net Sales", or only "Revenue"), map it to "Revenue" and do not also create a "Sales" entry.
+   A metric distinct from Revenue — never merge the two, and never map one label's figure into the other's entry, regardless of whether both labels appear on the page or only one of them does.
+   Recognize under: Sales, Net Sales, Total Sales.
+   If the page's top-line label is one of the Revenue labels (Revenue, Total Revenue, Net Revenue, Turnover, Total Turnover), extract it as "Revenue". If the page's top-line label is one of the Sales labels (Sales, Net Sales, Total Sales), extract it as "Sales". If both a Revenue-labeled line and a Sales-labeled line appear on the same page (even with matching values), extract both, each under its own metric name.
 
 7. "Cash Conversion"
    Extract ONLY when the page prints a figure explicitly labeled "Cash Conversion" (or a clear equivalent such as "Cash Conversion Ratio", "FCF Conversion"). NEVER calculate this yourself from Reported EBITDA, IFRS16, and Capex — even if all three are present on the page. If no explicit cash-conversion figure is printed, omit the metric entirely.
