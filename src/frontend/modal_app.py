@@ -26,7 +26,7 @@ app = modal.App("vereport", image=image)
     ],
     cpu=2,
     memory=4096,
-    min_containers=1,
+    min_containers=0,
     max_containers=1,
     timeout=3600,
 )

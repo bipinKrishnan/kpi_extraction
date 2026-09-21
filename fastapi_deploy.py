@@ -44,7 +44,7 @@ app = modal.App("port-extract", image=image)
     # Keep containers warm between bursts so LibreOffice boots are not repaid.
     scaledown_window=300,
     # Always keep one container resident, so no request ever pays a cold start.
-    min_containers=1,
+    min_containers=0,
 )
 # Without this a container serves one request at a time, which would idle the
 # router's 5 xlsx + 5 PDF conversion thread limiters. target_inputs leaves
