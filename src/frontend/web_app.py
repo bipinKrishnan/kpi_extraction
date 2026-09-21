@@ -95,6 +95,11 @@ PERIOD_TYPE_ORDER = {
     "FY": 4,
 }
 
+FX_BASIS_OPTIONS = [
+    "constant",
+    "reported",
+]
+
 # ------------------------------------------------------------
 # Metric display order for the Financial KPIs matrix.
 #
@@ -4149,6 +4154,7 @@ def matching_workbooks(
 def render_financial_preview(
     matrix_df,
     column_records,
+    selected_fx_basis=None,
 ):
     """Render the matrix in the same logical structure as Excel."""
 
@@ -4161,6 +4167,22 @@ def render_financial_preview(
         return
 
     preview_df = matrix_df.copy()
+
+    # FX Basis is selected above the table on the homepage, so it
+    # is no longer displayed as a table column.
+    if (
+        selected_fx_basis is not None
+        and "FX Basis" in preview_df.columns
+    ):
+        preview_df = preview_df[
+            preview_df["FX Basis"].astype(str).str.strip().str.lower()
+            == str(selected_fx_basis).strip().lower()
+        ].copy()
+
+    if "FX Basis" in preview_df.columns:
+        preview_df = preview_df.drop(
+            columns=["FX Basis"]
+        )
 
     renamed_columns = {}
 
@@ -4302,8 +4324,8 @@ def render_homepage():
                     unsafe_allow_html=True,
                 )
 
-                col1, col2 = st.columns(
-                    2,
+                col1, col2, col3 = st.columns(
+                    3,
                     gap="large",
                 )
 
@@ -4386,6 +4408,38 @@ def render_homepage():
                         )
                     )
 
+                    # FX Basis is a page-level selector, alongside
+                    # Company and Reporting Period. The Financial KPIs
+                    # table below is filtered to the selected basis and
+                    # therefore does not display FX Basis as a column.
+                    fx_basis_options = [
+                        basis
+                        for basis in FX_BASIS_OPTIONS
+                        if (
+                            not matrix_df.empty
+                            and "FX Basis" in matrix_df.columns
+                            and matrix_df["FX Basis"]
+                            .fillna("")
+                            .astype(str)
+                            .str.strip()
+                            .str.lower()
+                            .eq(basis.lower())
+                            .any()
+                        )
+                    ]
+
+                    if not fx_basis_options:
+                        fx_basis_options = FX_BASIS_OPTIONS.copy()
+
+                    # Rendered into the third column of the selector
+                    # row above, so it sits alongside Company and
+                    # Reporting Period.
+                    selected_fx_basis = col3.selectbox(
+                        "FX Basis",
+                        options=fx_basis_options,
+                        key="homepage_fx_basis",
+                    )
+
                     st.markdown(
                         """
                         <div class="vp-section-header">
@@ -4402,6 +4456,7 @@ def render_homepage():
                     render_financial_preview(
                         matrix_df,
                         column_records,
+                        selected_fx_basis=selected_fx_basis,
                     )
 
     with parsing_tab:
