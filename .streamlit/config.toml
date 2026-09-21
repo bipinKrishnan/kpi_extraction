@@ -1,0 +1,23 @@
+# VerePort — light base theme (matches the Apple-light palette
+# used in sample.html). This sets the underlying colors for
+# widgets and the st.dataframe canvas, which CSS in web_app.py
+# cannot fully reach on its own.
+#
+# Note: st.dataframe column-header text is drawn on a canvas by
+# Glide Data Grid at 40% alpha of theme.textColor, and its
+# header background/table borders come from the theme below —
+# so these values are the only lever for table readability.
+#
+# baseFontWeight: st.dataframe text is drawn on a canvas and
+# takes its weight from this root weight (CSS cannot reach
+# it). 450 = slightly thicker than the 400 default.
+[theme]
+base = "light"
+backgroundColor = "#f5f5f7"
+secondaryBackgroundColor = "#ffffff"
+primaryColor = "#0071e3"
+textColor = "#1d1d1f"
+baseFontWeight = 450
+borderColor = "#a8adb8"
+dataframeBorderColor = "#a8adb8"
+dataframeHeaderBackgroundColor = "#eef0f3"

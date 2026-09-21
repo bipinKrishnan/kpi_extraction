@@ -164,1202 +164,998 @@ st.set_page_config(
 # Apple-inspired UI
 # ============================================================
 
+LIGHT_CSS = """
+<style>
+
+/* =========================================================
+   VerePort — Apple-inspired light system
+   Palette and typography follow sample.html
+   (Apple light surfaces: #f5f5f7 page, white panels).
+   ========================================================= */
+
+:root {
+    color-scheme: light;
+
+    --vp-page: #f5f5f7;
+    --vp-surface-1: #ffffff;
+    --vp-surface-2: #f5f5f7;
+    --vp-surface-3: #ebebed;
+    --vp-surface-hover: #fafafc;
+
+    --vp-chrome: rgba(255,255,255,0.72);
+    --vp-chrome-solid: rgba(255,255,255,0.88);
+
+    --vp-text-primary: #1d1d1f;
+    --vp-text-secondary: #6e6e73;
+    --vp-text-muted: #86868b;
+
+    --vp-grid: #e8e8ed;
+    --vp-axis: #d2d2d7;
+
+    --vp-border: rgba(0,0,0,0.08);
+    --vp-border-strong: rgba(0,0,0,0.16);
+
+    --vp-fill-0: rgba(0,0,0,0.015);
+    --vp-fill-1: rgba(0,0,0,0.035);
+    --vp-fill-2: rgba(0,0,0,0.06);
+    --vp-fill-3: rgba(0,0,0,0.11);
+
+    --vp-accent: #0071e3;
+    --vp-accent-solid: #0071e3;
+    --vp-accent-hover: #0077ed;
+    --vp-accent-tint: rgba(0,113,227,0.07);
+
+    /* Darker status steps so label text clears 4.5:1 on white */
+    --vp-good: #1a7f37;
+    --vp-warning: #9a6700;
+    --vp-serious: #bc4c00;
+    --vp-critical: #b42318;
+
+    --vp-card-shadow:
+        0 1px 2px rgba(0,0,0,0.05),
+        0 8px 24px rgba(0,0,0,0.06);
+
+    --vp-sans:
+        "SF Pro Display",
+        "SF Pro Text",
+        -apple-system,
+        BlinkMacSystemFont,
+        "Helvetica Neue",
+        Helvetica,
+        Arial,
+        sans-serif;
+
+    --vp-mono:
+        "SF Mono",
+        ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        Monaco,
+        Consolas,
+        monospace;
+
+    --vp-radius: 18px;
+    --vp-radius-sm: 12px;
+    --vp-pill: 980px;
+}
+
+
+/* =========================================================
+   Base application
+   ========================================================= */
+
+html,
+body,
+[data-testid="stAppViewContainer"],
+[data-testid="stApp"] {
+    background: var(--vp-page) !important;
+    color: var(--vp-text-primary) !important;
+    font-family: var(--vp-sans) !important;
+}
+
+body {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+}
+
+.stApp {
+    background:
+        radial-gradient(
+            circle at 50% -15%,
+            rgba(0,113,227,0.055),
+            transparent 34%
+        ),
+        var(--vp-page) !important;
+}
+
+[data-testid="stAppViewContainer"] {
+    background: transparent !important;
+    margin-left: 0 !important;
+}
+
+[data-testid="stHeader"] {
+    background: transparent !important;
+    height: 0 !important;
+}
+
+[data-testid="stToolbar"] {
+    visibility: hidden;
+    height: 0;
+}
+
+#MainMenu {
+    visibility: hidden;
+}
+
+footer {
+    visibility: hidden;
+}
+
+.block-container {
+    max-width: 1480px;
+    padding-top: 2.4rem !important;
+    padding-bottom: 5rem !important;
+    padding-left: 3rem !important;
+    padding-right: 3rem !important;
+}
+
+
+/* =========================================================
+   Typography
+   ========================================================= */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-family: var(--vp-sans) !important;
+    color: var(--vp-text-primary) !important;
+    letter-spacing: -0.025em !important;
+}
+
+h1 {
+    font-size: clamp(2.8rem, 5vw, 4.8rem) !important;
+    line-height: 0.98 !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.055em !important;
+    margin-bottom: 1rem !important;
+}
+
+h2 {
+    font-size: 2rem !important;
+    line-height: 1.08 !important;
+    font-weight: 650 !important;
+}
+
+h3 {
+    font-size: 1.45rem !important;
+    line-height: 1.15 !important;
+    font-weight: 650 !important;
+}
+
+p,
+li,
+label,
+.stMarkdown,
+.stCaption,
+.stText,
+.stAlert {
+    font-family: var(--vp-sans) !important;
+    color: var(--vp-text-primary);
+}
+
+.stCaption,
+[data-testid="stCaptionContainer"] {
+    color: var(--vp-text-secondary) !important;
+    font-size: 0.92rem !important;
+}
+
+code,
+pre {
+    font-family: var(--vp-mono) !important;
+}
+
+
+/* =========================================================
+   Sidebar — completely removed
+   ========================================================= */
+
+section[data-testid="stSidebar"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stSidebarNav"] {
+    display: none !important;
+    width: 0 !important;
+    min-width: 0 !important;
+    max-width: 0 !important;
+}
+
+
+/* =========================================================
+   Top-right logout
+   ========================================================= */
+
+[data-testid="stHorizontalBlock"] {
+    align-items: flex-start !important;
+}
+
+div[data-testid="column"]:has(button[key="top_right_logout"]) {
+    margin-left: auto !important;
+}
+
+button[key="top_right_logout"] {
+    white-space: nowrap !important;
+}
+
+
+/* =========================================================
+   Tabs
+   ========================================================= */
+
+[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    gap: 4px;
+    border-bottom:
+        1px solid var(--vp-border) !important;
+}
+
+[data-testid="stTabs"] [data-baseweb="tab"] {
+    color: var(--vp-text-secondary) !important;
+    font-size: 0.92rem;
+    padding: 10px 12px;
+}
+
+[data-testid="stTabs"] [data-baseweb="tab"]:hover {
+    color: var(--vp-text-primary) !important;
+}
+
+[data-testid="stTabs"] [aria-selected="true"] {
+    color: var(--vp-text-primary) !important;
+    border-bottom-color: var(--vp-accent) !important;
+}
+
+[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+    background: var(--vp-accent) !important;
+}
+
+[data-testid="stTabs"] [data-baseweb="tab-border"] {
+    display: none;
+}
+
+
+/* =========================================================
+   Cards
+   ========================================================= */
+
+.vp-card {
+    padding: 1.55rem;
+
+    border:
+        1px solid var(--vp-border);
+
+    border-radius: var(--vp-radius);
+
+    background: var(--vp-surface-1);
+
+    box-shadow: var(--vp-card-shadow);
+
+    margin-bottom: 1rem;
+}
+
+.vp-card-subtle {
+    background: var(--vp-fill-1);
+}
+
+.vp-card-title {
+    color: var(--vp-text-primary);
+    font-size: 1.05rem;
+    font-weight: 650;
+    letter-spacing: -0.015em;
+    margin-bottom: 0.35rem;
+}
+
+.vp-card-description {
+    color: var(--vp-text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+
+/* =========================================================
+   KPI metric cards
+   ========================================================= */
+
+[data-testid="stMetric"] {
+    padding: 1.35rem 1.45rem !important;
+
+    border:
+        1px solid var(--vp-border) !important;
+
+    border-radius:
+        var(--vp-radius) !important;
+
+    background: var(--vp-surface-1) !important;
+
+    box-shadow: var(--vp-card-shadow) !important;
+}
+
+[data-testid="stMetricLabel"] {
+    color: var(--vp-text-secondary) !important;
+    font-size: 0.82rem !important;
+    font-weight: 550 !important;
+}
+
+[data-testid="stMetricValue"] {
+    color: var(--vp-text-primary) !important;
+    font-size: 2rem !important;
+    font-weight: 650 !important;
+    letter-spacing: -0.04em !important;
+}
+
+
+/* =========================================================
+   Buttons
+   ========================================================= */
+
+.stButton > button,
+.stDownloadButton > button,
+button[kind="primary"] {
+    min-height: 44px !important;
+
+    padding:
+        0.62rem 1.15rem !important;
+
+    border-radius:
+        var(--vp-pill) !important;
+
+    border:
+        1px solid var(--vp-border) !important;
+
+    background:
+        var(--vp-surface-1) !important;
+
+    color:
+        var(--vp-text-primary) !important;
+
+    font-family:
+        var(--vp-sans) !important;
+
+    font-weight:
+        600 !important;
+
+    letter-spacing:
+        -0.01em !important;
+
+    transition:
+        background 160ms ease,
+        transform 160ms ease,
+        border-color 160ms ease !important;
+
+    box-shadow:
+        0 1px 2px rgba(0,0,0,0.04) !important;
+
+    cursor: pointer !important;
+}
+
+.stButton > button:hover,
+.stDownloadButton > button:hover {
+    background:
+        var(--vp-surface-2) !important;
+
+    border-color:
+        var(--vp-border-strong) !important;
+
+    transform:
+        translateY(-1px);
+}
+
+.stButton > button:active,
+.stDownloadButton > button:active {
+    background:
+        var(--vp-surface-3) !important;
+
+    transform:
+        translateY(1px) scale(0.98);
+
+    transition-duration:
+        60ms;
+}
+
+/* Light-blue primary buttons: pale fill, clearly visible
+   boundary, and dark-blue ink so the label stays readable. */
+button[kind="primary"],
+.stButton > button[kind="primary"],
+.stDownloadButton > button[kind="primary"] {
+    background:
+        #eaf3fe !important;
+
+    border:
+        1px solid #a9d1f6 !important;
+
+    color:
+        #0055b3 !important;
+
+    box-shadow:
+        0 1px 2px rgba(0,0,0,0.04) !important;
+}
+
+button[kind="primary"]:hover,
+.stButton > button[kind="primary"]:hover,
+.stDownloadButton > button[kind="primary"]:hover {
+    background:
+        #dcebfd !important;
+
+    border-color:
+        #8fc2f2 !important;
+
+    color:
+        #004a9e !important;
+
+    box-shadow:
+        0 2px 8px rgba(0,113,227,0.14) !important;
+}
+
+button[kind="primary"]:active,
+.stButton > button[kind="primary"]:active,
+.stDownloadButton > button[kind="primary"]:active {
+    background:
+        #cfe5fb !important;
+
+    border-color:
+        #7fb6ee !important;
+
+    color:
+        #00438f !important;
+
+    transform:
+        translateY(1px) scale(0.98);
+
+    box-shadow:
+        0 1px 4px rgba(0,113,227,0.12) !important;
+
+    transition-duration:
+        60ms;
+}
+
+
+/* =========================================================
+   Inputs
+   ========================================================= */
+
+/* Dropdowns and inputs: light (white) surface, black ink,
+   and a clearly visible light-grey boundary. The slightly
+   darker border (#a8adb8) keeps the box outline visible at
+   rest, not only on focus. */
+.stTextInput input,
+.stSelectbox div[data-baseweb="select"] > div,
+.stMultiSelect div[data-baseweb="select"] > div,
+.stNumberInput input,
+.stDateInput input,
+.stTextArea textarea {
+    min-height: 44px !important;
+
+    border:
+        1px solid #a8adb8 !important;
+
+    border-radius:
+        var(--vp-radius-sm) !important;
+
+    background:
+        #ffffff !important;
+
+    color:
+        #1d1d1f !important;
+
+    font-family:
+        var(--vp-sans) !important;
+
+    box-shadow: none !important;
+}
+
+/* Dropdown field text and selected value: black, at full
+   opacity. Selectbox values and placeholder text are rendered
+   semi-transparent by default, which makes them look washed
+   out on the light surface. */
+.stSelectbox div[data-baseweb="select"] *,
+.stMultiSelect div[data-baseweb="select"] *,
+.stSelectbox div[data-baseweb="select"] svg,
+.stMultiSelect div[data-baseweb="select"] svg {
+    color:
+        #1d1d1f !important;
+
+    opacity:
+        1 !important;
+
+    fill:
+        #1d1d1f;
+}
+
+.stTextInput input:focus,
+.stNumberInput input:focus,
+.stTextArea textarea:focus {
+    border-color:
+        rgba(0,113,227,0.72) !important;
+
+    box-shadow:
+        0 0 0 3px rgba(0,113,227,0.12) !important;
+}
+
+/* Visible boundary at rest for the login App Key box
+   (Streamlit only darkens it on focus by default). */
+.stTextInput input:hover {
+    border-color:
+        #a8adb8 !important;
+}
+
+/* Dropdown option menus: white surface, black ink, visible
+   light boundary so options are always readable. */
+[data-baseweb="popover"],
+[data-baseweb="popover"] [role="listbox"] {
+    background:
+        #ffffff !important;
+
+    color:
+        #1d1d1f !important;
+
+    border:
+        1px solid #d2d2d7 !important;
+
+    box-shadow:
+        0 8px 24px rgba(0,0,0,0.10) !important;
+}
+
+[data-baseweb="popover"] [role="option"],
+[data-baseweb="popover"] [role="option"] div,
+[data-baseweb="popover"] [role="option"] span {
+    color:
+        #1d1d1f !important;
+}
+
+[data-baseweb="popover"] [role="option"]:hover {
+    background:
+        #f0f7fe !important;
+}
+
+[data-baseweb="popover"] [role="option"][aria-selected="true"] {
+    background:
+        #eaf3fe !important;
+}
+
+/* Option rows: full opacity so entries in the Company /
+   Reporting Period / FX Basis menus stay dark and readable. */
+[data-baseweb="popover"] [role="option"] *,
+[data-baseweb="popover"] li {
+    opacity:
+        1 !important;
+}
+
+.stTextInput label,
+.stSelectbox label,
+.stMultiSelect label,
+.stFileUploader label,
+.stDateInput label {
+    color:
+        var(--vp-text-secondary) !important;
+
+    font-size:
+        0.84rem !important;
+
+    font-weight:
+        550 !important;
+}
+
+
+/* =========================================================
+   File uploader
+   ========================================================= */
+
+[data-testid="stFileUploader"] {
+    padding: 0.25rem;
+}
+
+[data-testid="stFileUploaderDropzone"] {
+    min-height: 180px;
+
+    border:
+        1px dashed #a8adb8 !important;
+
+    border-radius:
+        var(--vp-radius) !important;
+
+    background:
+        #ffffff !important;
+
+    transition:
+        border-color 160ms ease,
+        background 160ms ease !important;
+}
+
+[data-testid="stFileUploaderDropzone"]:hover {
+    border-color:
+        rgba(0,113,227,0.55) !important;
+
+    background:
+        var(--vp-accent-tint) !important;
+}
+
+/* Dropzone text ("Drag and drop files here …") and the
+   "Browse files" button: light surface, dark ink. */
+[data-testid="stFileUploaderDropzoneInstructions"],
+[data-testid="stFileUploaderDropzoneInstructions"] * {
+    color:
+        #1d1d1f !important;
+}
+
+[data-testid="stFileUploaderDropzoneInstructions"] small,
+[data-testid="stFileUploaderDropzoneInstructions"] small * {
+    color:
+        #6e6e73 !important;
+}
+
+[data-testid="stFileUploaderDropzone"] button {
+    min-height: 40px !important;
+
+    padding:
+        0.45rem 1.05rem !important;
+
+    border-radius:
+        var(--vp-pill) !important;
+
+    border:
+        1px solid #a9d1f6 !important;
+
+    background:
+        #eaf3fe !important;
+
+    color:
+        #0055b3 !important;
+
+    font-family:
+        var(--vp-sans) !important;
+
+    font-weight:
+        600 !important;
+
+    box-shadow:
+        0 1px 2px rgba(0,0,0,0.04) !important;
+
+    cursor: pointer !important;
+}
+
+[data-testid="stFileUploaderDropzone"] button:hover {
+    background:
+        #dcebfd !important;
+
+    border-color:
+        #8fc2f2 !important;
+
+    color:
+        #004a9e !important;
+}
+
+
+/* =========================================================
+   Dataframes
+   ========================================================= */
+
+/* Tables: white surface, black ink, visible light-grey
+   boundary (darker than the default so the outline reads
+   clearly on the #f5f5f7 page). The column-header row is
+   drawn on a canvas by Glide Data Grid using the theme's
+   dataframeHeaderBackgroundColor / dataframeBorderColor —
+   see .streamlit/config.toml. */
+[data-testid="stDataFrame"],
+[data-testid="stDataFrame"] * {
+    color:
+        #1d1d1f !important;
+}
+
+[data-testid="stDataFrame"] {
+    border:
+        1px solid #a8adb8 !important;
+
+    border-radius:
+        var(--vp-radius) !important;
+
+    overflow:
+        hidden !important;
+
+    background:
+        #ffffff !important;
+}
+
+
+/* =========================================================
+   Alerts
+   ========================================================= */
+
+[data-testid="stAlert"] {
+    border-radius:
+        var(--vp-radius-sm) !important;
+
+    border:
+        1px solid var(--vp-border) !important;
+
+    background:
+        var(--vp-surface-1) !important;
+
+    color:
+        var(--vp-text-primary) !important;
+}
+
+[data-testid="stAlert"] p,
+[data-testid="stAlert"] div {
+    color:
+        var(--vp-text-primary) !important;
+}
+
+
+/* =========================================================
+   Expanders
+   ========================================================= */
+
+/* Expanders (e.g. "Resolve conflicting values"): light
+   surface and dark text in both collapsed and expanded
+   states, including the summary row and its icon. */
+[data-testid="stExpander"],
+[data-testid="stExpanderDetails"],
+[data-testid="stExpander"] details,
+[data-testid="stExpander"] details > summary {
+    background:
+        #ffffff !important;
+
+    color:
+        #1d1d1f !important;
+
+    border-color:
+        #d2d2d7 !important;
+}
+
+[data-testid="stExpander"] {
+    border:
+        1px solid #a8adb8 !important;
+
+    border-radius:
+        var(--vp-radius) !important;
+
+    overflow:
+        hidden !important;
+}
+
+[data-testid="stExpander"] summary {
+    color:
+        #1d1d1f !important;
+
+    font-weight:
+        600 !important;
+}
+
+[data-testid="stExpander"] summary p,
+[data-testid="stExpander"] summary div,
+[data-testid="stExpander"] summary span,
+[data-testid="stExpander"] summary svg {
+    color:
+        #1d1d1f !important;
+
+    fill:
+        #1d1d1f;
+}
+
+[data-testid="stExpander"] summary:hover {
+    color:
+        #1d1d1f !important;
+}
+
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] * {
+    color:
+        #1d1d1f;
+}
+
+
+/* =========================================================
+   Progress
+   ========================================================= */
+
+[data-testid="stProgressBar"] {
+    padding-top: 0.4rem;
+}
+
+[data-testid="stProgressBar"] > div {
+    background:
+        rgba(0,0,0,0.08) !important;
+
+    border-radius:
+        var(--vp-pill) !important;
+}
+
+[data-testid="stProgressBar"] > div > div {
+    background:
+        linear-gradient(
+            90deg,
+            #2a8cff,
+            #0071e3
+        ) !important;
+
+    border-radius:
+        var(--vp-pill) !important;
+}
+
+
+/* =========================================================
+   Dividers
+   ========================================================= */
+
+hr {
+    border:
+        none !important;
+
+    border-top:
+        1px solid var(--vp-border) !important;
+
+    margin:
+        2rem 0 !important;
+}
+
+
+/* =========================================================
+   Login
+   ========================================================= */
+
+.st-key-login_container {
+    width: min(520px, 100%) !important;
+    margin: 12vh auto 0 auto !important;
+
+    padding: 2.5rem !important;
+
+    border:
+        1px solid var(--vp-border) !important;
+
+    border-radius:
+        28px !important;
+
+    background:
+        var(--vp-surface-1) !important;
+
+    box-shadow:
+        0 24px 70px rgba(0,0,0,0.10) !important;
+}
+
+.vp-login-title {
+    color: var(--vp-text-primary);
+    font-size: 2.6rem;
+    line-height: 1;
+    font-weight: 700;
+    letter-spacing: -0.05em;
+    margin: 0 0 1.5rem 0;
+}
+
+.st-key-login_container [data-testid="stForm"] {
+    border: none !important;
+    padding: 0 !important;
+    background: transparent !important;
+}
+
+.st-key-login_container [data-testid="stFormSubmitButton"] button {
+    margin-top: 0.35rem !important;
+}
+
+
+/* =========================================================
+   Extraction result section
+   ========================================================= */
+
+.vp-result-banner {
+    padding: 1.2rem 1.35rem;
+
+    border:
+        1px solid rgba(26,127,55,0.20);
+
+    border-radius:
+        var(--vp-radius);
+
+    background:
+        rgba(26,127,55,0.055);
+
+    margin-bottom:
+        1.2rem;
+}
+
+.vp-result-title {
+    color: var(--vp-text-primary);
+    font-weight: 650;
+}
+
+.vp-result-copy {
+    color: var(--vp-text-secondary);
+    font-size: 0.88rem;
+    margin-top: 0.25rem;
+}
+
+
+/* =========================================================
+   Small metadata rows
+   ========================================================= */
+
+.vp-meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+
+    margin-top: 0.8rem;
+}
+
+.vp-meta-item,
+.vp-file-chip {
+    padding: 6px 10px;
+
+    border:
+        1px solid var(--vp-border);
+
+    border-radius:
+        var(--vp-pill);
+
+    background:
+        var(--vp-fill-1);
+
+    color:
+        var(--vp-text-secondary);
+
+    font-size:
+        0.77rem;
+}
+
+
+/* =========================================================
+   Footer
+   ========================================================= */
+
+.vp-footer {
+    padding-top: 2rem;
+
+    color:
+        var(--vp-text-muted);
+
+    font-size:
+        0.75rem;
+
+    text-align:
+        center;
+}
+
+
+/* =========================================================
+   Mobile
+   ========================================================= */
+
+@media (max-width: 900px) {
+
+    .block-container {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        padding-top: 1.25rem !important;
+    }
+
+    .st-key-login_container {
+        margin-top: 7vh !important;
+        padding: 2rem 1.4rem !important;
+        border-radius: 22px !important;
+    }
+}
+
+</style>
+"""
+
+
 def inject_apple_theme():
     """
     Apple-inspired visual system for the entire Streamlit app.
+    Follows the light theme defined in sample.html.
     """
 
-    st.session_state["ui_theme"] = "dark"
-    theme = "dark"
-
-    dark_css = """
-    <style>
-
-    /* =========================================================
-       VerePort — Apple-inspired dark system
-       ========================================================= */
-
-    :root {
-        color-scheme: dark;
-
-        --vp-page: #000000;
-        --vp-surface-1: #1d1d1f;
-        --vp-surface-2: #232325;
-        --vp-surface-3: #2d2d30;
-        --vp-surface-hover: #212123;
-
-        --vp-chrome: rgba(29,29,31,0.72);
-        --vp-chrome-solid: rgba(29,29,31,0.92);
-
-        --vp-text-primary: #f5f5f7;
-        --vp-text-secondary: #a1a1a6;
-        --vp-text-muted: #86868b;
-
-        --vp-grid: #2a2a2c;
-        --vp-axis: #424245;
-
-        --vp-border: rgba(255,255,255,0.09);
-        --vp-border-strong: rgba(255,255,255,0.18);
-
-        --vp-fill-0: rgba(255,255,255,0.02);
-        --vp-fill-1: rgba(255,255,255,0.045);
-        --vp-fill-2: rgba(255,255,255,0.08);
-        --vp-fill-3: rgba(255,255,255,0.16);
-
-        --vp-accent: #2997ff;
-        --vp-accent-solid: #0071e3;
-        --vp-accent-hover: #0077ed;
-        --vp-accent-tint: rgba(41,151,255,0.08);
-
-        --vp-good: #30d158;
-        --vp-warning: #ffd60a;
-        --vp-serious: #ff9f0a;
-        --vp-critical: #ff453a;
-
-        --vp-sans:
-            -apple-system,
-            BlinkMacSystemFont,
-            "SF Pro Display",
-            "SF Pro Text",
-            "Helvetica Neue",
-            Helvetica,
-            Arial,
-            sans-serif;
-
-        --vp-mono:
-            "SF Mono",
-            ui-monospace,
-            SFMono-Regular,
-            Menlo,
-            Monaco,
-            Consolas,
-            monospace;
-
-        --vp-radius: 18px;
-        --vp-radius-sm: 12px;
-        --vp-pill: 980px;
-
-        --vp-shadow: none;
-
-        --vp-shadow-soft:
-            0 1px 2px rgba(0,0,0,0.25),
-            0 10px 35px rgba(0,0,0,0.18);
-    }
-
-
-    /* =========================================================
-       Base application
-       ========================================================= */
-
-    html,
-    body,
-    [data-testid="stAppViewContainer"],
-    [data-testid="stApp"] {
-        background: var(--vp-page) !important;
-        color: var(--vp-text-primary) !important;
-        font-family: var(--vp-sans) !important;
-    }
-
-    body {
-        -webkit-font-smoothing: antialiased;
-        text-rendering: optimizeLegibility;
-    }
-
-    .stApp {
-        background:
-            radial-gradient(
-                circle at 50% -15%,
-                rgba(41,151,255,0.07),
-                transparent 34%
-            ),
-            var(--vp-page) !important;
-    }
-
-    [data-testid="stAppViewContainer"] {
-        background: transparent !important;
-        margin-left: 0 !important;
-    }
-
-    [data-testid="stHeader"] {
-        background: transparent !important;
-        height: 0 !important;
-    }
-
-    [data-testid="stToolbar"] {
-        visibility: hidden;
-        height: 0;
-    }
-
-    #MainMenu {
-        visibility: hidden;
-    }
-
-    footer {
-        visibility: hidden;
-    }
-
-    .block-container {
-        max-width: 1480px;
-        padding-top: 2.4rem !important;
-        padding-bottom: 5rem !important;
-        padding-left: 3rem !important;
-        padding-right: 3rem !important;
-    }
-
-
-    /* =========================================================
-       Typography
-       ========================================================= */
-
-    h1,
-    h2,
-    h3,
-    h4,
-    h5,
-    h6 {
-        font-family: var(--vp-sans) !important;
-        color: var(--vp-text-primary) !important;
-        letter-spacing: -0.025em !important;
-    }
-
-    h1 {
-        font-size: clamp(2.8rem, 5vw, 4.8rem) !important;
-        line-height: 0.98 !important;
-        font-weight: 700 !important;
-        letter-spacing: -0.055em !important;
-        margin-bottom: 1rem !important;
-    }
-
-    h2 {
-        font-size: 2rem !important;
-        line-height: 1.08 !important;
-        font-weight: 650 !important;
-    }
-
-    h3 {
-        font-size: 1.45rem !important;
-        line-height: 1.15 !important;
-        font-weight: 650 !important;
-    }
-
-    p,
-    li,
-    label,
-    .stMarkdown,
-    .stCaption,
-    .stText,
-    .stAlert {
-        font-family: var(--vp-sans) !important;
-    }
-
-    .stCaption,
-    [data-testid="stCaptionContainer"] {
-        color: var(--vp-text-secondary) !important;
-        font-size: 0.92rem !important;
-    }
-
-    code,
-    pre {
-        font-family: var(--vp-mono) !important;
-    }
-
-
-    /* =========================================================
-       Sidebar — completely removed
-       ========================================================= */
-
-    section[data-testid="stSidebar"],
-    [data-testid="stSidebarCollapsedControl"],
-    [data-testid="stSidebarNav"] {
-        display: none !important;
-        width: 0 !important;
-        min-width: 0 !important;
-        max-width: 0 !important;
-    }
-
-
-    /* =========================================================
-       Top-right logout
-       ========================================================= */
-
-    [data-testid="stHorizontalBlock"] {
-        align-items: flex-start !important;
-    }
-
-    div[data-testid="column"]:has(button[key="top_right_logout"]) {
-        margin-left: auto !important;
-    }
-
-    button[key="top_right_logout"] {
-        white-space: nowrap !important;
-    }
-
-
-    /* =========================================================
-       Cards
-       ========================================================= */
-
-    .vp-card {
-        padding: 1.55rem;
-
-        border:
-            1px solid var(--vp-border);
-
-        border-radius: var(--vp-radius);
-
-        background:
-            linear-gradient(
-                145deg,
-                rgba(35,35,37,0.96),
-                rgba(29,29,31,0.96)
-            );
-
-        box-shadow: var(--vp-shadow);
-
-        margin-bottom: 1rem;
-    }
-
-    .vp-card-subtle {
-        background: var(--vp-fill-1);
-    }
-
-    .vp-card-title {
-        color: var(--vp-text-primary);
-        font-size: 1.05rem;
-        font-weight: 650;
-        letter-spacing: -0.015em;
-        margin-bottom: 0.35rem;
-    }
-
-    .vp-card-description {
-        color: var(--vp-text-secondary);
-        font-size: 0.9rem;
-        line-height: 1.5;
-    }
-
-
-    /* =========================================================
-       KPI metric cards
-       ========================================================= */
-
-    [data-testid="stMetric"] {
-        padding: 1.35rem 1.45rem !important;
-
-        border:
-            1px solid var(--vp-border) !important;
-
-        border-radius:
-            var(--vp-radius) !important;
-
-        background:
-            linear-gradient(
-                145deg,
-                rgba(35,35,37,0.96),
-                rgba(29,29,31,0.96)
-            ) !important;
-
-        box-shadow: none !important;
-    }
-
-    [data-testid="stMetricLabel"] {
-        color: var(--vp-text-secondary) !important;
-        font-size: 0.82rem !important;
-        font-weight: 550 !important;
-    }
-
-    [data-testid="stMetricValue"] {
-        color: var(--vp-text-primary) !important;
-        font-size: 2rem !important;
-        font-weight: 650 !important;
-        letter-spacing: -0.04em !important;
-    }
-
-
-    /* =========================================================
-       Buttons
-       ========================================================= */
-
-    .stButton > button,
-    .stDownloadButton > button,
-    button[kind="primary"] {
-        min-height: 44px !important;
-
-        padding:
-            0.62rem 1.15rem !important;
-
-        border-radius:
-            var(--vp-pill) !important;
-
-        border:
-            1px solid rgba(255,255,255,0.12) !important;
-
-        background:
-            var(--vp-surface-3) !important;
-
-        color:
-            var(--vp-text-primary) !important;
-
-        font-family:
-            var(--vp-sans) !important;
-
-        font-weight:
-            600 !important;
-
-        letter-spacing:
-            -0.01em !important;
-
-        transition:
-            background 160ms ease,
-            transform 160ms ease,
-            border-color 160ms ease !important;
-
-        box-shadow: none !important;
-        cursor: pointer !important;
-    }
-
-    .stButton > button:hover,
-    .stDownloadButton > button:hover {
-        background:
-            #363639 !important;
-
-        border-color:
-            var(--vp-border-strong) !important;
-
-        transform:
-            translateY(-1px);
-    }
-
-    .stButton > button:active,
-    .stDownloadButton > button:active {
-        background:
-            #2e2e31 !important;
-
-        transform:
-            translateY(1px) scale(0.98);
-
-        transition-duration:
-            60ms;
-    }
-
-    button[kind="primary"],
-    .stButton > button[kind="primary"],
-    .stDownloadButton > button[kind="primary"] {
-        background:
-            linear-gradient(
-                180deg,
-                #2997ff,
-                #0071e3
-            ) !important;
-
-        border-color:
-            rgba(255,255,255,0.08) !important;
-
-        color:
-            white !important;
-
-        box-shadow:
-            0 6px 18px rgba(0,113,227,0.24) !important;
-    }
-
-    button[kind="primary"]:hover,
-    .stButton > button[kind="primary"]:hover,
-    .stDownloadButton > button[kind="primary"]:hover {
-        background:
-            linear-gradient(
-                180deg,
-                #40a4ff,
-                #0077ed
-            ) !important;
-
-        box-shadow:
-            0 8px 22px rgba(0,113,227,0.30) !important;
-    }
-
-    button[kind="primary"]:active,
-    .stButton > button[kind="primary"]:active,
-    .stDownloadButton > button[kind="primary"]:active {
-        background:
-            linear-gradient(
-                180deg,
-                #2490f4,
-                #0067d1
-            ) !important;
-
-        transform:
-            translateY(1px) scale(0.98);
-
-        box-shadow:
-            0 3px 10px rgba(0,113,227,0.22) !important;
-
-        transition-duration:
-            60ms;
-    }
-
-
-    /* =========================================================
-       Inputs
-       ========================================================= */
-
-    .stTextInput input,
-    .stSelectbox div[data-baseweb="select"] > div,
-    .stMultiSelect div[data-baseweb="select"] > div,
-    .stNumberInput input,
-    .stDateInput input,
-    .stTextArea textarea {
-        min-height: 44px !important;
-
-        border:
-            1px solid var(--vp-border) !important;
-
-        border-radius:
-            var(--vp-radius-sm) !important;
-
-        background:
-            var(--vp-fill-1) !important;
-
-        color:
-            var(--vp-text-primary) !important;
-
-        font-family:
-            var(--vp-sans) !important;
-
-        box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.025) !important;
-    }
-
-    .stTextInput input:focus,
-    .stNumberInput input:focus,
-    .stTextArea textarea:focus {
-        border-color:
-            rgba(41,151,255,0.72) !important;
-
-        box-shadow:
-            0 0 0 3px rgba(41,151,255,0.12) !important;
-    }
-
-    .stTextInput label,
-    .stSelectbox label,
-    .stMultiSelect label,
-    .stFileUploader label,
-    .stDateInput label {
-        color:
-            var(--vp-text-secondary) !important;
-
-        font-size:
-            0.84rem !important;
-
-        font-weight:
-            550 !important;
-    }
-
-
-    /* =========================================================
-       File uploader
-       ========================================================= */
-
-    [data-testid="stFileUploader"] {
-        padding: 0.25rem;
-    }
-
-    [data-testid="stFileUploaderDropzone"] {
-        min-height: 180px;
-
-        border:
-            1px dashed rgba(255,255,255,0.20) !important;
-
-        border-radius:
-            var(--vp-radius) !important;
-
-        background:
-            linear-gradient(
-                145deg,
-                rgba(255,255,255,0.045),
-                rgba(255,255,255,0.025)
-            ) !important;
-
-        transition:
-            border-color 160ms ease,
-            background 160ms ease !important;
-    }
-
-    [data-testid="stFileUploaderDropzone"]:hover {
-        border-color:
-            rgba(41,151,255,0.65) !important;
-
-        background:
-            rgba(41,151,255,0.045) !important;
-    }
-
-    [data-testid="stFileUploaderDropzoneInstructions"] {
-        color:
-            var(--vp-text-secondary) !important;
-    }
-
-    [data-testid="stFileUploaderDropzoneInstructions"] small {
-        color:
-            var(--vp-text-muted) !important;
-    }
-
-
-    /* =========================================================
-       Dataframes
-       ========================================================= */
-
-    [data-testid="stDataFrame"] {
-        border:
-            1px solid var(--vp-border) !important;
-
-        border-radius:
-            var(--vp-radius) !important;
-
-        overflow:
-            hidden !important;
-
-        background:
-            var(--vp-surface-1) !important;
-    }
-
-
-    /* =========================================================
-       Alerts
-       ========================================================= */
-
-    [data-testid="stAlert"] {
-        border-radius:
-            var(--vp-radius-sm) !important;
-
-        border:
-            1px solid var(--vp-border) !important;
-
-        background:
-            var(--vp-fill-1) !important;
-
-        color:
-            var(--vp-text-secondary) !important;
-    }
-
-
-    /* =========================================================
-       Expanders
-       ========================================================= */
-
-    [data-testid="stExpander"] {
-        border:
-            1px solid var(--vp-border) !important;
-
-        border-radius:
-            var(--vp-radius) !important;
-
-        background:
-            var(--vp-fill-1) !important;
-
-        overflow:
-            hidden !important;
-    }
-
-    [data-testid="stExpander"] summary {
-        color:
-            var(--vp-text-primary) !important;
-
-        font-weight:
-            600 !important;
-    }
-
-
-    /* =========================================================
-       Progress
-       ========================================================= */
-
-    [data-testid="stProgressBar"] {
-        padding-top: 0.4rem;
-    }
-
-    [data-testid="stProgressBar"] > div {
-        background:
-            rgba(255,255,255,0.10) !important;
-
-        border-radius:
-            var(--vp-pill) !important;
-    }
-
-    [data-testid="stProgressBar"] > div > div {
-        background:
-            linear-gradient(
-                90deg,
-                #2997ff,
-                #0071e3
-            ) !important;
-
-        border-radius:
-            var(--vp-pill) !important;
-    }
-
-
-    /* =========================================================
-       Dividers
-       ========================================================= */
-
-    hr {
-        border:
-            none !important;
-
-        border-top:
-            1px solid var(--vp-border) !important;
-
-        margin:
-            2rem 0 !important;
-    }
-
-
-    /* =========================================================
-       Login
-       ========================================================= */
-
-    /*
-       The title and form are now inside the same Streamlit
-       container. This keeps the existing login content exactly
-       as-is while allowing the card to position both elements
-       together.
-    */
-
-    .st-key-login_container {
-        width: min(520px, 100%) !important;
-        margin: 12vh auto 0 auto !important;
-
-        padding: 2.5rem !important;
-
-        border:
-            1px solid var(--vp-border) !important;
-
-        border-radius:
-            28px !important;
-
-        background:
-            linear-gradient(
-                145deg,
-                rgba(35,35,37,0.98),
-                rgba(18,18,19,0.98)
-            ) !important;
-
-        box-shadow:
-            0 24px 70px rgba(0,0,0,0.38) !important;
-    }
-
-    .vp-login-title {
-        color: var(--vp-text-primary);
-        font-size: 2.6rem;
-        line-height: 1;
-        font-weight: 700;
-        letter-spacing: -0.05em;
-        margin: 0 0 1.5rem 0;
-    }
-
-    .st-key-login_container [data-testid="stForm"] {
-        border: none !important;
-        padding: 0 !important;
-        background: transparent !important;
-    }
-
-    .st-key-login_container [data-testid="stFormSubmitButton"] button {
-        margin-top: 0.35rem !important;
-    }
-
-
-    /* =========================================================
-       Extraction result section
-       ========================================================= */
-
-    .vp-result-banner {
-        padding: 1.2rem 1.35rem;
-
-        border:
-            1px solid rgba(48,209,88,0.20);
-
-        border-radius:
-            var(--vp-radius);
-
-        background:
-            rgba(48,209,88,0.055);
-
-        margin-bottom:
-            1.2rem;
-    }
-
-    .vp-result-title {
-        color: var(--vp-text-primary);
-        font-weight: 650;
-    }
-
-    .vp-result-copy {
-        color: var(--vp-text-secondary);
-        font-size: 0.88rem;
-        margin-top: 0.25rem;
-    }
-
-
-    /* =========================================================
-       Small metadata rows
-       ========================================================= */
-
-    .vp-meta-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-
-        margin-top: 0.8rem;
-    }
-
-    .vp-meta-item,
-    .vp-file-chip {
-        padding: 6px 10px;
-
-        border:
-            1px solid var(--vp-border);
-
-        border-radius:
-            var(--vp-pill);
-
-        background:
-            var(--vp-fill-1);
-
-        color:
-            var(--vp-text-secondary);
-
-        font-size:
-            0.77rem;
-    }
-
-
-    /* =========================================================
-       Footer
-       ========================================================= */
-
-    .vp-footer {
-        padding-top: 2rem;
-
-        color:
-            var(--vp-text-muted);
-
-        font-size:
-            0.75rem;
-
-        text-align:
-            center;
-    }
-
-
-    /* =========================================================
-       Mobile
-       ========================================================= */
-
-    @media (max-width: 900px) {
-
-        .block-container {
-            padding-left: 1rem !important;
-            padding-right: 1rem !important;
-            padding-top: 1.25rem !important;
-        }
-
-        .st-key-login_container {
-            margin-top: 7vh !important;
-            padding: 2rem 1.4rem !important;
-            border-radius: 22px !important;
-        }
-    }
-
-    </style>
-    """
-
-    light_css = """
-    <style>
-
-    :root {
-        color-scheme: light;
-
-        --vp-page: #f5f5f7;
-        --vp-surface-1: #ffffff;
-        --vp-surface-2: #f5f5f7;
-        --vp-surface-3: #ebebed;
-        --vp-surface-hover: #fafafc;
-
-        --vp-text-primary: #1d1d1f;
-        --vp-text-secondary: #6e6e73;
-        --vp-text-muted: #86868b;
-
-        --vp-border: rgba(0,0,0,0.08);
-        --vp-border-strong: rgba(0,0,0,0.16);
-
-        --vp-fill-1: rgba(0,0,0,0.035);
-
-        --vp-sans:
-            -apple-system,
-            BlinkMacSystemFont,
-            "SF Pro Display",
-            "SF Pro Text",
-            "Helvetica Neue",
-            Helvetica,
-            Arial,
-            sans-serif;
-
-        --vp-radius: 18px;
-        --vp-radius-sm: 12px;
-        --vp-pill: 980px;
-    }
-
-    body,
-    [data-testid="stAppViewContainer"],
-    [data-testid="stApp"] {
-        background: var(--vp-page) !important;
-        color: var(--vp-text-primary) !important;
-    }
-
-    .stApp {
-        background:
-            radial-gradient(
-                circle at 50% -15%,
-                rgba(0,113,227,0.055),
-                transparent 34%
-            ),
-            var(--vp-page) !important;
-    }
-
-    [data-testid="stAppViewContainer"] {
-        background: transparent !important;
-    }
-
-    [data-testid="stHeader"] {
-        background: transparent !important;
-        height: 0 !important;
-    }
-
-    [data-testid="stToolbar"] {
-        visibility: hidden;
-        height: 0;
-    }
-
-    #MainMenu {
-        visibility: hidden;
-    }
-
-    footer {
-        visibility: hidden;
-    }
-
-    .block-container {
-        max-width: 1480px;
-        padding-top: 2.4rem !important;
-        padding-bottom: 5rem !important;
-        padding-left: 3rem !important;
-        padding-right: 3rem !important;
-    }
-
-    h1,
-    h2,
-    h3,
-    h4,
-    h5,
-    h6 {
-        color: var(--vp-text-primary) !important;
-    }
-
-    h1 {
-        font-size: clamp(2.8rem, 5vw, 4.8rem) !important;
-        line-height: 0.98 !important;
-        font-weight: 700 !important;
-        letter-spacing: -0.055em !important;
-    }
-
-    h2 {
-        font-size: 2rem !important;
-        line-height: 1.08 !important;
-        font-weight: 650 !important;
-    }
-
-    h3 {
-        font-size: 1.45rem !important;
-        line-height: 1.15 !important;
-        font-weight: 650 !important;
-    }
-
-    p,
-    li,
-    label,
-    .stMarkdown,
-    .stCaption,
-    .stText {
-        font-family: var(--vp-sans) !important;
-    }
-
-    .stCaption,
-    [data-testid="stCaptionContainer"] {
-        color: var(--vp-text-secondary) !important;
-    }
-
-    section[data-testid="stSidebar"],
-    [data-testid="stSidebarCollapsedControl"],
-    [data-testid="stSidebarNav"] {
-        display: none !important;
-        width: 0 !important;
-        min-width: 0 !important;
-        max-width: 0 !important;
-    }
-
-    .vp-card {
-        background:
-            rgba(255,255,255,0.92);
-
-        border-color:
-            var(--vp-border);
-
-        box-shadow:
-            0 1px 2px rgba(0,0,0,0.04),
-            0 8px 24px rgba(0,0,0,0.06);
-    }
-
-    [data-testid="stMetric"] {
-        background:
-            rgba(255,255,255,0.92) !important;
-
-        border-color:
-            var(--vp-border) !important;
-
-        box-shadow:
-            0 1px 2px rgba(0,0,0,0.04),
-            0 8px 24px rgba(0,0,0,0.06) !important;
-    }
-
-    [data-testid="stMetricLabel"] {
-        color:
-            var(--vp-text-secondary) !important;
-    }
-
-    [data-testid="stMetricValue"] {
-        color:
-            var(--vp-text-primary) !important;
-    }
-
-    .stButton > button,
-    .stDownloadButton > button,
-    button[kind="primary"] {
-        border-color:
-            var(--vp-border) !important;
-
-        background:
-            #ffffff !important;
-
-        color:
-            var(--vp-text-primary) !important;
-
-        box-shadow:
-            0 1px 2px rgba(0,0,0,0.04) !important;
-    }
-
-    .stButton > button:hover,
-    .stDownloadButton > button:hover {
-        background:
-            #f5f5f7 !important;
-
-        border-color:
-            var(--vp-border-strong) !important;
-    }
-
-    .stButton > button:active,
-    .stDownloadButton > button:active {
-        background:
-            #e8e8ed !important;
-
-        transform:
-            translateY(1px) scale(0.98);
-
-        transition-duration:
-            60ms;
-    }
-
-    button[kind="primary"],
-    .stButton > button[kind="primary"],
-    .stDownloadButton > button[kind="primary"] {
-        background:
-            linear-gradient(
-                180deg,
-                #147ce5,
-                #0071e3
-            ) !important;
-
-        color:
-            #ffffff !important;
-
-        border-color:
-            rgba(0,0,0,0.03) !important;
-
-        box-shadow:
-            0 6px 18px rgba(0,113,227,0.18) !important;
-    }
-
-    button[kind="primary"]:active,
-    .stButton > button[kind="primary"]:active,
-    .stDownloadButton > button[kind="primary"]:active {
-        background:
-            linear-gradient(
-                180deg,
-                #1272cf,
-                #0062c4
-            ) !important;
-
-        transform:
-            translateY(1px) scale(0.98);
-
-        box-shadow:
-            0 2px 8px rgba(0,113,227,0.18) !important;
-
-        transition-duration:
-            60ms;
-    }
-
-    .stTextInput input,
-    .stSelectbox div[data-baseweb="select"] > div,
-    .stMultiSelect div[data-baseweb="select"] > div,
-    .stNumberInput input,
-    .stDateInput input,
-    .stTextArea textarea {
-        background:
-            rgba(255,255,255,0.92) !important;
-
-        color:
-            var(--vp-text-primary) !important;
-
-        border-color:
-            var(--vp-border) !important;
-    }
-
-    [data-testid="stFileUploaderDropzone"] {
-        border-color:
-            rgba(0,0,0,0.16) !important;
-
-        background:
-            rgba(255,255,255,0.68) !important;
-    }
-
-    [data-testid="stFileUploaderDropzone"]:hover {
-        border-color:
-            rgba(0,113,227,0.55) !important;
-
-        background:
-            rgba(0,113,227,0.035) !important;
-    }
-
-    [data-testid="stDataFrame"] {
-        background:
-            #ffffff !important;
-
-        border-color:
-            var(--vp-border) !important;
-    }
-
-    [data-testid="stAlert"] {
-        background:
-            rgba(255,255,255,0.80) !important;
-
-        border-color:
-            var(--vp-border) !important;
-    }
-
-    [data-testid="stExpander"] {
-        background:
-            rgba(255,255,255,0.78) !important;
-
-        border-color:
-            var(--vp-border) !important;
-    }
-
-    [data-testid="stProgressBar"] > div {
-        background:
-            rgba(0,0,0,0.08) !important;
-    }
-
-    [data-testid="stProgressBar"] > div > div {
-        background:
-            linear-gradient(
-                90deg,
-                #2a8cff,
-                #0071e3
-            ) !important;
-    }
-
-    hr {
-        border-top:
-            1px solid var(--vp-border) !important;
-    }
-
-    .vp-result-banner {
-        background:
-            rgba(26,127,55,0.055);
-
-        border-color:
-            rgba(26,127,55,0.16);
-    }
-
-    /* =========================================================
-       Login
-       ========================================================= */
-
-    .st-key-login_container {
-        width: min(520px, 100%) !important;
-        margin: 12vh auto 0 auto !important;
-
-        padding: 2.5rem !important;
-
-        border:
-            1px solid var(--vp-border) !important;
-
-        border-radius:
-            28px !important;
-
-        background:
-            rgba(255,255,255,0.96) !important;
-
-        box-shadow:
-            0 24px 70px rgba(0,0,0,0.10) !important;
-    }
-
-    .vp-login-title {
-        color: var(--vp-text-primary);
-        font-size: 2.6rem;
-        line-height: 1;
-        font-weight: 700;
-        letter-spacing: -0.05em;
-        margin: 0 0 1.5rem 0;
-    }
-
-    .st-key-login_container [data-testid="stForm"] {
-        border: none !important;
-        padding: 0 !important;
-        background: transparent !important;
-    }
-
-    .st-key-login_container [data-testid="stFormSubmitButton"] button {
-        margin-top: 0.35rem !important;
-    }
-
-    @media (max-width: 900px) {
-
-        .block-container {
-            padding-left: 1rem !important;
-            padding-right: 1rem !important;
-            padding-top: 1.25rem !important;
-        }
-
-        .st-key-login_container {
-            margin-top: 7vh !important;
-            padding: 2rem 1.4rem !important;
-            border-radius: 22px !important;
-        }
-    }
-
-    </style>
-    """
+    st.session_state["ui_theme"] = "light"
 
     st.markdown(
-        dark_css if theme == "dark" else light_css,
+        LIGHT_CSS,
         unsafe_allow_html=True,
     )
 
@@ -4306,23 +4102,6 @@ def render_homepage():
                 )
 
             else:
-
-                st.markdown(
-                    """
-                    <div class="vp-section-header">
-                        <div>
-                            <div class="vp-section-title">
-                                Performance archive
-                            </div>
-                            <div class="vp-section-copy">
-                                Select a company and reporting period to
-                                open a previously exported KPI workbook.
-                            </div>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
 
                 col1, col2, col3 = st.columns(
                     3,

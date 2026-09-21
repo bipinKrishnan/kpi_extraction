@@ -12,6 +12,11 @@ image = (
             copy=True,
     )
     .add_local_file(
+            ".streamlit/config.toml",
+            "/root/.streamlit/config.toml",
+            copy=True,
+    )
+    .add_local_file(
         "src/frontend/web_app.py",
         "/root/web_app.py",
     )
