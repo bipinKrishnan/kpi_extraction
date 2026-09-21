@@ -3951,6 +3951,7 @@ def render_financial_preview(
     matrix_df,
     column_records,
     selected_fx_basis=None,
+    selected_period_type=None,
 ):
     """Render the matrix in the same logical structure as Excel."""
 
@@ -3980,6 +3981,25 @@ def render_financial_preview(
             columns=["FX Basis"]
         )
 
+    # Period Type is selected above the table on the homepage,
+    # so only the columns matching the selected period type are
+    # kept and it is no longer displayed as part of the column
+    # headers.
+    if (
+        selected_period_type is not None
+    ):
+        kept_columns = [
+            column
+            for column in preview_df.columns
+            if (
+                not isinstance(column, tuple)
+                or str(column[1]).strip().lower()
+                == str(selected_period_type).strip().lower()
+            )
+        ]
+
+        preview_df = preview_df[kept_columns].copy()
+
     renamed_columns = {}
 
     for column in preview_df.columns:
@@ -3995,7 +4015,6 @@ def render_financial_preview(
 
             renamed_columns[column] = (
                 f"{period} – "
-                f"{period_type} – "
                 f"{format_measure_label(measure)}"
             )
 
@@ -4103,8 +4122,8 @@ def render_homepage():
 
             else:
 
-                col1, col2, col3 = st.columns(
-                    3,
+                col1, col2, col3, col4 = st.columns(
+                    4,
                     gap="large",
                 )
 
@@ -4187,10 +4206,39 @@ def render_homepage():
                         )
                     )
 
-                    # FX Basis is a page-level selector, alongside
-                    # Company and Reporting Period. The Financial KPIs
-                    # table below is filtered to the selected basis and
-                    # therefore does not display FX Basis as a column.
+                    # Period Type and FX Basis are page-level
+                    # selectors, alongside Company and Reporting
+                    # Period. The Financial KPIs table below is
+                    # filtered to the selected FX basis and only shows
+                    # columns for the selected period type, so neither
+                    # appears as a column in the table.
+                    period_type_options = [
+                        period_type
+                        for period_type in PERIOD_TYPE_ORDER
+                        if (
+                            not matrix_df.empty
+                            and any(
+                                isinstance(column, tuple)
+                                and str(column[1]).strip().lower()
+                                == period_type.lower()
+                                for column in matrix_df.columns
+                            )
+                        )
+                    ]
+
+                    if not period_type_options:
+                        period_type_options = list(
+                            PERIOD_TYPE_ORDER.keys()
+                        )
+
+                    # Rendered into the third column of the selector
+                    # row above, between Reporting Period and FX Basis.
+                    selected_period_type = col3.selectbox(
+                        "Period Type",
+                        options=period_type_options,
+                        key="homepage_period_type",
+                    )
+
                     fx_basis_options = [
                         basis
                         for basis in FX_BASIS_OPTIONS
@@ -4210,10 +4258,10 @@ def render_homepage():
                     if not fx_basis_options:
                         fx_basis_options = FX_BASIS_OPTIONS.copy()
 
-                    # Rendered into the third column of the selector
-                    # row above, so it sits alongside Company and
-                    # Reporting Period.
-                    selected_fx_basis = col3.selectbox(
+                    # Rendered into the fourth column of the selector
+                    # row above, so it sits alongside Company,
+                    # Reporting Period and Period Type.
+                    selected_fx_basis = col4.selectbox(
                         "FX Basis",
                         options=fx_basis_options,
                         key="homepage_fx_basis",
@@ -4236,6 +4284,7 @@ def render_homepage():
                         matrix_df,
                         column_records,
                         selected_fx_basis=selected_fx_basis,
+                        selected_period_type=selected_period_type,
                     )
 
     with parsing_tab:
