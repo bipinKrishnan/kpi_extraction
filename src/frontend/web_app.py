@@ -4233,9 +4233,19 @@ def render_homepage():
 
                     # Rendered into the third column of the selector
                     # row above, between Reporting Period and FX Basis.
+                    # Defaults to FY when that period type is available
+                    # for the selected workbook.
+                    if "FY" in period_type_options:
+                        default_period_type_index = (
+                            period_type_options.index("FY")
+                        )
+                    else:
+                        default_period_type_index = 0
+
                     selected_period_type = col3.selectbox(
                         "Period Type",
                         options=period_type_options,
+                        index=default_period_type_index,
                         key="homepage_period_type",
                     )
 
